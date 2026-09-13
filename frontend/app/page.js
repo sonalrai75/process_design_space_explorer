@@ -1836,8 +1836,17 @@ export default function Home() {
         <h2 style={{
           marginTop:0
         }}>
-          Demo workflow
+          Build and evaluate the baseline
         </h2>
+
+        <p style={{
+          marginTop:0,
+          color:"#4b5563",
+          lineHeight:1.5
+        }}>
+          Load or calibrate the process model, run the AS-IS simulation,
+          and define the design variables before choosing an optimization path.
+        </p>
 
         <div style={{
           display:"flex",
@@ -1863,44 +1872,156 @@ export default function Home() {
               opacity:
                 busy ? 0.55 : 1
             }}
-            onClick={
-              runSimulation
-            }
+            onClick={runSimulation}
           >
             Run baseline simulation
           </button>
+        </div>
+      </section>
+
+      <section style={{
+        ...card,
+        marginTop:18
+      }}>
+        <h2 style={{
+          marginTop:0,
+          marginBottom:6
+        }}>
+          Choose optimization approach
+        </h2>
+
+        <p style={{
+          marginTop:0,
+          marginBottom:16,
+          color:"#4b5563",
+          lineHeight:1.5
+        }}>
+          Automated and manual optimization are alternative paths to a TO-BE design.
+          You can use either approach after defining the design variables.
+        </p>
+
+        <div style={{
+          display:"grid",
+          gridTemplateColumns:
+            "repeat(auto-fit,minmax(280px,1fr))",
+          gap:14
+        }}>
+          <div style={{
+            border:"1px solid #dbeafe",
+            borderRadius:12,
+            padding:16,
+            background:"#f8fbff"
+          }}>
+            <div style={{
+              fontSize:12,
+              fontWeight:800,
+              color:"#1d4ed8",
+              letterSpacing:".06em",
+              textTransform:"uppercase"
+            }}>
+              Automated optimization
+            </div>
+
+            <h3 style={{
+              margin:"6px 0 8px"
+            }}>
+              Architecture-family search
+            </h3>
+
+            <p style={{
+              margin:"0 0 14px",
+              color:"#4b5563",
+              lineHeight:1.45,
+              fontSize:14
+            }}>
+              DOE + evolving-SVD search + stochastic robustness validation.
+              The optimizer searches the selected design variables automatically.
+            </p>
+
+            <button
+              disabled={busy}
+              style={{
+                ...buttonStyle,
+                width:"100%",
+                fontWeight:700,
+                opacity:
+                  busy ? 0.55 : 1
+              }}
+              onClick={runOptimize}
+            >
+              {runningAction
+                === "Running robust optimization"
+                ? "Optimization running..."
+                : "Run automated optimization"}
+            </button>
+          </div>
+
+          <div style={{
+            border:"1px solid #ddd6fe",
+            borderRadius:12,
+            padding:16,
+            background:"#fbfaff"
+          }}>
+            <div style={{
+              fontSize:12,
+              fontWeight:800,
+              color:"#6d28d9",
+              letterSpacing:".06em",
+              textTransform:"uppercase"
+            }}>
+              Manual optimization
+            </div>
+
+            <h3 style={{
+              margin:"6px 0 8px"
+            }}>
+              Manual SVD Explorer
+            </h3>
+
+            <p style={{
+              margin:"0 0 14px",
+              color:"#4b5563",
+              lineHeight:1.45,
+              fontSize:14
+            }}>
+              Inspect stochastic SVD modes, choose a direction and step size,
+              simulate the change, and iteratively navigate the design space.
+            </p>
+
+            <button
+              disabled={busy || !model}
+              style={{
+                ...buttonStyle,
+                width:"100%",
+                fontWeight:700,
+                opacity:
+                  busy || !model ? 0.55 : 1
+              }}
+              onClick={openManualSvd}
+            >
+              Open Manual SVD Explorer
+            </button>
+          </div>
+        </div>
+
+        <div style={{
+          marginTop:16,
+          paddingTop:16,
+          borderTop:"1px solid #e5e7eb"
+        }}>
+          <div style={{
+            fontSize:13,
+            color:"#6b7280",
+            marginBottom:8
+          }}>
+            After either optimization path produces a TO-BE design:
+          </div>
 
           <button
             disabled={busy}
             style={{
               ...buttonStyle,
-              opacity:
-                busy ? 0.55 : 1
-            }}
-            onClick={runOptimize}
-          >
-            {runningAction
-              === "Running robust optimization"
-              ? "Optimization running..."
-              : "Optimize architecture families"}
-          </button>
-
-          <button
-            disabled={busy || !model}
-            style={{
-              ...buttonStyle,
-              opacity:
-                busy || !model ? 0.55 : 1
-            }}
-            onClick={openManualSvd}
-          >
-            Manual SVD Explorer
-          </button>
-
-          <button
-            disabled={busy}
-            style={{
-              ...buttonStyle,
+              fontWeight:700,
               opacity:
                 busy ? 0.55 : 1
             }}
