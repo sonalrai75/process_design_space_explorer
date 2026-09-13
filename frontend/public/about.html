@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Process Design Space Explorer — Technical Overview</title>
+  <meta name="description" content="Technical overview of the Process Design Space Explorer: features, algorithms, simulation, SVD design optimization, robust architecture search, event-log calibration, and current capabilities." />
+  <style>
+    :root{
+      --bg:#f8fafc;
+      --card:#ffffff;
+      --text:#111827;
+      --muted:#64748b;
+      --line:#e5e7eb;
+      --accent:#4f46e5;
+      --accent-soft:#eef2ff;
+      --green:#059669;
+      --green-soft:#ecfdf5;
+      --code:#0f172a;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+      background:var(--bg);
+      color:var(--text);
+      line-height:1.65;
+    }
+    .wrap{
+      max-width:1100px;
+      margin:0 auto;
+      padding:32px 20px 64px;
+    }
+    .hero{
+      background:linear-gradient(135deg,#ffffff 0%,#eef2ff 100%);
+      border:1px solid var(--line);
+      border-radius:20px;
+      padding:32px;
+      margin-bottom:24px;
+    }
+    h1{
+      margin:0 0 12px;
+      font-size:clamp(2rem,4vw,3.25rem);
+      line-height:1.1;
+    }
+    h2{
+      margin:36px 0 12px;
+      font-size:1.55rem;
+      line-height:1.25;
+    }
+    h3{
+      margin:24px 0 8px;
+      font-size:1.08rem;
+    }
+    p{margin:10px 0}
+    .lead{
+      font-size:1.1rem;
+      color:#334155;
+      max-width:900px;
+    }
+    .back{
+      display:inline-block;
+      text-decoration:none;
+      color:var(--accent);
+      font-weight:700;
+      margin-bottom:18px;
+    }
+    .toc{
+      display:grid;
+      grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
+      gap:10px;
+      margin-top:20px;
+    }
+    .toc a{
+      text-decoration:none;
+      color:#334155;
+      background:#fff;
+      border:1px solid var(--line);
+      border-radius:10px;
+      padding:10px 12px;
+    }
+    .section{
+      background:var(--card);
+      border:1px solid var(--line);
+      border-radius:16px;
+      padding:24px;
+      margin-top:18px;
+    }
+    .grid{
+      display:grid;
+      grid-template-columns:repeat(auto-fit,minmax(260px,1fr));
+      gap:14px;
+    }
+    .mini{
+      border:1px solid var(--line);
+      border-radius:12px;
+      padding:14px;
+      background:#fff;
+    }
+    code, pre{
+      font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace;
+    }
+    pre{
+      background:var(--code);
+      color:#e2e8f0;
+      padding:16px;
+      border-radius:12px;
+      overflow:auto;
+      line-height:1.45;
+      font-size:.9rem;
+    }
+    .formula{
+      background:var(--accent-soft);
+      border-left:4px solid var(--accent);
+      border-radius:8px;
+      padding:12px 14px;
+      margin:12px 0;
+      font-family:"SFMono-Regular",Consolas,monospace;
+      overflow:auto;
+    }
+    table{
+      width:100%;
+      border-collapse:collapse;
+      margin-top:10px;
+      font-size:.95rem;
+    }
+    th,td{
+      text-align:left;
+      border-bottom:1px solid var(--line);
+      padding:9px 8px;
+      vertical-align:top;
+    }
+    th{background:#f8fafc}
+    .tag{
+      display:inline-block;
+      padding:4px 8px;
+      border-radius:999px;
+      background:var(--accent-soft);
+      color:#3730a3;
+      font-size:.8rem;
+      font-weight:700;
+      margin:2px 4px 2px 0;
+    }
+    .good{
+      background:var(--green-soft);
+      color:var(--green);
+    }
+    ul{padding-left:22px}
+    li{margin:5px 0}
+    .footer{
+      color:var(--muted);
+      font-size:.9rem;
+      margin-top:28px;
+      text-align:center;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <a class="back" href="/">← Back to Process Design Space Explorer</a>
+
+    <section class="hero">
+      <h1>Process Design Space Explorer</h1>
+      <p class="lead">
+        A process digital-twin and design-optimization platform that combines event-log calibration,
+        discrete-event simulation, process mining, architecture-family search, evolving-SVD/null-space
+        design optimization, and replicated stochastic robustness analysis.
+      </p>
+      <div>
+        <span class="tag">Discrete-event simulation</span>
+        <span class="tag">Process mining</span>
+        <span class="tag">Evolving SVD</span>
+        <span class="tag">Null-space optimization</span>
+        <span class="tag">Robust design</span>
+        <span class="tag">Event-log calibration</span>
+        <span class="tag">Visual workflow modeling</span>
+      </div>
+
+      <div class="toc">
+        <a href="#overview">1. Overview</a>
+        <a href="#model">2. Process model</a>
+        <a href="#simulation">3. Simulation</a>
+        <a href="#optimization">4. Optimization</a>
+        <a href="#svd">5. SVD / null space</a>
+        <a href="#robustness">6. Robustness</a>
+        <a href="#calibration">7. Event-log calibration</a>
+        <a href="#modeler">8. Visual modeler</a>
+        <a href="#pipeline">9. End-to-end pipeline</a>
+        <a href="#limitations">10. Current limitations</a>
+        <a href="#versions">11. Version history</a>
+        <a href="#next">12. Next stage</a>
+      </div>
+    </section>
+
+    <section class="section" id="overview">
+      <h2>1. Overview and objective</h2>
+      <p>
+        The Process Design Space Explorer is designed to move beyond static process maps and descriptive
+        process-mining dashboards. It provides a quantitative process-engineering environment in which
+        routing, staffing, automation, service times, rework, architecture choices, cost, capacity,
+        cycle time, SLA performance, and stochastic robustness can be evaluated together.
+      </p>
+      <p>The central design question is:</p>
+      <div class="formula">
+        What process design or architecture provides the lowest cost while reliably meeting
+        demand-satisfaction, cycle-time, SLA, and capacity requirements?
+      </div>
+      <p>
+        A process design is represented by a vector of design variables and, where relevant, a discrete
+        architecture choice:
+      </p>
+      <div class="formula">y = F<sub>a</sub>(x)</div>
+      <p>
+        where <strong>x</strong> contains design variables, <strong>a</strong> identifies an architecture
+        family, and <strong>y</strong> contains resulting operational performance metrics.
+      </p>
+    </section>
+
+    <section class="section" id="model">
+      <h2>2. Process model</h2>
+      <p>
+        The central object is a <code>ProcessModel</code>. It contains activities, resource pools,
+        design variables, process architectures, demand, SLA parameters, cost information, and
+        other operational characteristics.
+      </p>
+
+      <div class="grid">
+        <div class="mini">
+          <h3>Activities</h3>
+          <p>Service-time behavior, names, resource-pool assignment, and process role.</p>
+        </div>
+        <div class="mini">
+          <h3>Resources</h3>
+          <p>Capacity, staffing levels, and cost structure.</p>
+        </div>
+        <div class="mini">
+          <h3>Architectures</h3>
+          <p>Alternative routing structures and process-family definitions.</p>
+        </div>
+        <div class="mini">
+          <h3>Design variables</h3>
+          <p>Fixed, continuous, quantized, and discrete variables.</p>
+        </div>
+      </div>
+
+      <p>A key schema detail is that workflow connectivity is architecture-specific:</p>
+      <pre>model.architectures[i].transitions</pre>
+
+      <p>Supported variable classes include:</p>
+      <ul>
+        <li><strong>Fixed</strong> — quantities held constant.</li>
+        <li><strong>Continuous</strong> — e.g. automation or rework rates.</li>
+        <li><strong>Quantized</strong> — e.g. integer staffing levels.</li>
+        <li><strong>Discrete</strong> — e.g. architecture family.</li>
+      </ul>
+    </section>
+
+    <section class="section" id="simulation">
+      <h2>3. Discrete-event simulation</h2>
+      <p>
+        The application includes a custom FCFS-style multi-server discrete-event simulator. It generates
+        arrivals, routes cases through activities, maintains resource/server availability, creates queues,
+        samples service times, handles probabilistic routing and rework, and records completion and
+        event-log information.
+      </p>
+
+      <div class="grid">
+        <div class="mini"><strong>Stochastic arrivals</strong></div>
+        <div class="mini"><strong>Stochastic service times</strong></div>
+        <div class="mini"><strong>Multi-server resources</strong></div>
+        <div class="mini"><strong>Queues</strong></div>
+        <div class="mini"><strong>Branching and merging</strong></div>
+        <div class="mini"><strong>Rework loops</strong></div>
+        <div class="mini"><strong>Architecture-specific routing</strong></div>
+        <div class="mini"><strong>Warm-up / steady-state measurement</strong></div>
+      </div>
+
+      <h3>Primary simulation metrics</h3>
+      <ul>
+        <li>Throughput</li>
+        <li>Realized arrival rate</li>
+        <li>Mean and P95 cycle time</li>
+        <li>SLA attainment</li>
+        <li>Average WIP</li>
+        <li>Resource utilization</li>
+        <li>Backlog growth</li>
+        <li>Annual cost</li>
+      </ul>
+
+      <h3>Structural capacity analysis</h3>
+      <p>
+        Expected activity visit ratios are calculated from process routing. If <code>Q</code> is the
+        transient routing matrix, expected visits satisfy:
+      </p>
+      <div class="formula">(I - Qᵀ)v = e₀</div>
+      <p>
+        These visits are combined with arrival rate, service time, and resource capacity to estimate
+        structural resource utilization.
+      </p>
+      <table>
+        <thead><tr><th>Maximum utilization</th><th>Interpretation</th></tr></thead>
+        <tbody>
+          <tr><td>≤ 90%</td><td>STABLE</td></tr>
+          <tr><td>90–95%</td><td>MARGINAL</td></tr>
+          <tr><td>&gt; 95%</td><td>OVERLOADED</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section" id="optimization">
+      <h2>4. Design-space optimization</h2>
+      <p>
+        The optimizer combines global feasibility exploration with local geometric optimization.
+        Each architecture family is searched independently and then compared.
+      </p>
+
+      <h3>Coarse DOE search</h3>
+      <p>
+        Approximately 240 design points are evaluated per architecture to identify feasible regions,
+        performance envelopes, low-cost seeds, and promising robust candidates.
+      </p>
+
+      <h3>Typical envelope outputs</h3>
+      <ul>
+        <li>Maximum throughput</li>
+        <li>Maximum demand satisfaction</li>
+        <li>Minimum P95 cycle time</li>
+        <li>Maximum SLA</li>
+        <li>Minimum maximum-resource utilization</li>
+      </ul>
+
+      <p>
+        This global stage is essential because SVD is local. It can describe nearby design geometry,
+        but it cannot locate a distant feasible region by itself.
+      </p>
+    </section>
+
+    <section class="section" id="svd">
+      <h2>5. Evolving SVD and null-space optimization</h2>
+      <p>
+        Around a design point, a finite-difference Jacobian is constructed for the active process
+        constraints or selected performance measures:
+      </p>
+      <div class="formula">J = ∂g / ∂x</div>
+
+      <p>The Jacobian is decomposed using singular value decomposition:</p>
+      <div class="formula">J = UΣVᵀ</div>
+
+      <p>
+        Small-singular-value directions identify combinations of design changes that have relatively
+        little first-order effect on the active constraints. These directions form an approximate
+        local null space.
+      </p>
+
+      <h3>Cost improvement in the null space</h3>
+      <div class="formula">d = -N Nᵀ ∇C</div>
+
+      <p>
+        The cost gradient is projected into the null space to identify a direction that can reduce cost
+        while approximately preserving active process requirements. After each move, the process is
+        resimulated, the active set may change, a new Jacobian is built, and SVD is recomputed.
+      </p>
+
+      <p>
+        This makes the method an <strong>evolving-SVD / evolving-null-space optimization</strong>,
+        rather than a one-time decomposition.
+      </p>
+
+      <h3>Active constraints</h3>
+      <p>
+        Only binding or near-binding constraints are used to define the local design manifold.
+        Constraints comfortably inside their allowable range do not unnecessarily restrict movement.
+      </p>
+
+      <h3>Quantized variables</h3>
+      <p>
+        Staffing and other integer-valued design variables are handled by projecting in continuous
+        design space, snapping to permitted values, and then re-evaluating the resulting candidate.
+      </p>
+    </section>
+
+    <section class="section" id="robustness">
+      <h2>6. Statistical robustness</h2>
+      <p>
+        A nominally feasible design may fail under different random arrivals or service-time realizations.
+        The application therefore uses replicated discrete-event simulation to estimate design robustness.
+      </p>
+
+      <h3>Current robust constraints</h3>
+      <div class="formula">
+        Flow balance ≥ 98%<br/>
+        P95 cycle time ≤ 600 minutes<br/>
+        SLA ≥ 90%<br/>
+        Maximum resource utilization ≤ 95%
+      </div>
+
+      <h3>Flow balance</h3>
+      <p>
+        Absolute throughput was removed as a robustness constraint because a stable demand-limited process
+        cannot sustainably produce more than its arrival demand. The normalized metric is:
+      </p>
+      <div class="formula">Flow Balance = Throughput / Realized Arrival Rate</div>
+
+      <p>
+        The user-facing metric is capped at 100%. It answers whether the system is keeping up with the
+        demand actually realized in each replication.
+      </p>
+
+      <h3>Replication strategy</h3>
+      <table>
+        <thead><tr><th>Stage</th><th>Replications</th><th>Cases per replication</th></tr></thead>
+        <tbody>
+          <tr><td>Quick candidate screen</td><td>12</td><td>~500</td></tr>
+          <tr><td>Final validation</td><td>40</td><td>~1200</td></tr>
+        </tbody>
+      </table>
+
+      <p>
+        Candidate comparisons use common random numbers to reduce comparison noise. Final validation
+        uses independent simulations and reports Wilson 95% confidence intervals.
+      </p>
+
+      <h3>Architecture ranking rule</h3>
+      <ol>
+        <li>Architectures meeting the robustness target rank ahead of those that do not.</li>
+        <li>Among target-meeting architectures, lowest annual cost ranks first.</li>
+        <li>Robustness probability breaks remaining ties.</li>
+        <li>If no architecture reaches target, highest robustness is preferred.</li>
+      </ol>
+
+      <p>The target is:</p>
+      <div class="formula">P(all constraints satisfied) ≥ 90%</div>
+    </section>
+
+    <section class="section" id="calibration">
+      <h2>7. Event-log calibration</h2>
+      <p>
+        The application accepts CSV, XLSX, and XLS event logs and lets the user map:
+      </p>
+      <ul>
+        <li>Case ID</li>
+        <li>Activity</li>
+        <li>Start time</li>
+        <li>End time</li>
+        <li>Resource / performer</li>
+      </ul>
+
+      <p>The calibration layer estimates:</p>
+      <div class="grid">
+        <div class="mini"><strong>Activities</strong><br/>Discovered from unique event names.</div>
+        <div class="mini"><strong>Service times</strong><br/>Estimated from timestamps.</div>
+        <div class="mini"><strong>Routing probabilities</strong><br/>Estimated from directly-following transitions.</div>
+        <div class="mini"><strong>Rework</strong><br/>Detected through repeated/backward transitions.</div>
+        <div class="mini"><strong>Arrival rate</strong><br/>Estimated from case-start timestamps.</div>
+        <div class="mini"><strong>Resources</strong><br/>Observed performers and approximate capacity.</div>
+      </div>
+
+      <p>Routing probabilities are estimated as:</p>
+      <div class="formula">P(B|A) = N(A→B) / Σⱼ N(A→j)</div>
+
+      <p>
+        The calibrated result becomes the active process model used by both simulation and robust optimization.
+      </p>
+    </section>
+
+    <section class="section" id="modeler">
+      <h2>8. Visual Process Modeler</h2>
+      <p>
+        The current modeler supports general directed workflows rather than only linear processes.
+        Connectivity is read from the active architecture's transition graph.
+      </p>
+
+      <p>Supported workflow structures include:</p>
+      <ul>
+        <li>Branching</li>
+        <li>Merging</li>
+        <li>Exception paths</li>
+        <li>Rework loops</li>
+        <li>Multiple terminal routes</li>
+        <li>Routing probabilities</li>
+      </ul>
+
+      <p>Users can currently edit:</p>
+      <ul>
+        <li>Activity names</li>
+        <li>Mean service times</li>
+        <li>Resource-pool assignments</li>
+        <li>Transition source, target, and probability</li>
+        <li>Resource capacities</li>
+        <li>Add/remove activities</li>
+        <li>Add/remove transitions</li>
+        <li>Download the active model as JSON</li>
+      </ul>
+    </section>
+
+    <section class="section" id="pipeline">
+      <h2>9. Current end-to-end pipeline</h2>
+      <pre>Define process manually
+        OR
+Upload event log
+        ↓
+Inspect / map columns
+        ↓
+Calibrate process model
+        ↓
+Review / edit workflow
+        ↓
+Review / edit resources and routing
+        ↓
+Run baseline simulation
+        ↓
+Evaluate structural capacity
+        ↓
+Run coarse DOE by architecture
+        ↓
+Find promising feasible regions
+        ↓
+Construct active-constraint Jacobian
+        ↓
+Perform SVD
+        ↓
+Compute null-space directions
+        ↓
+Search cost-improving local designs
+        ↓
+Generate safety candidates
+        ↓
+Evaluate candidates using common random numbers
+        ↓
+Construct cost-vs-robustness frontier
+        ↓
+Select lowest-cost design meeting robustness target
+        ↓
+Validate with 40 independent simulations
+        ↓
+Compare architectures</pre>
+    </section>
+
+    <section class="section" id="limitations">
+      <h2>10. Current limitations</h2>
+      <ul>
+        <li>Generic resource modeling is still incomplete; calibrated activities initially use existing resource-pool semantics.</li>
+        <li>Architecture generation is primarily predefined rather than automatically invented.</li>
+        <li>XES import is not yet implemented.</li>
+        <li>Process discovery is currently lightweight rather than a full PM4Py/Petri-net/conformance stack.</li>
+        <li>Full shift calendars, holidays, and time-varying resource schedules are not yet generalized.</li>
+        <li>Batching and advanced queue disciplines are not yet generalized.</li>
+        <li>The visual modeler is graph-based rather than a complete BPMN editor.</li>
+        <li>Forty final robustness replications are appropriate for an interactive prototype but not for very tight statistical guarantees.</li>
+      </ul>
+    </section>
+
+    <section class="section" id="versions">
+      <h2>11. Version history</h2>
+      <table>
+        <thead>
+          <tr><th>Version</th><th>Principal advance</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>v0.3</td><td>Initial simulation / optimization prototype</td></tr>
+          <tr><td>v0.4</td><td>DOE feasibility envelope + active-set SVD</td></tr>
+          <tr><td>v0.5</td><td>Backlog-drift constraint experiment</td></tr>
+          <tr><td>v0.6</td><td>Structural resource-utilization capacity model</td></tr>
+          <tr><td>v0.7</td><td>Robust optimization and cost/robustness frontier</td></tr>
+          <tr><td>v0.8</td><td>Common random numbers, Wilson intervals, explicit robustness status</td></tr>
+          <tr><td>v0.9</td><td>Demand-normalized flow balance replaces absolute throughput</td></tr>
+          <tr><td>v0.10</td><td>Correct architecture ranking and nominal-vs-robust UI</td></tr>
+          <tr><td>v0.11</td><td>Event-log calibration + Visual Process Modeler</td></tr>
+          <tr><td>v0.11.1</td><td>Defensive frontend array handling</td></tr>
+          <tr><td>v0.11.2</td><td>General node-edge workflow graph</td></tr>
+          <tr><td>v0.11.3</td><td>Correct architecture-level connectivity and transition persistence</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section" id="next">
+      <h2>12. Recommended next stage</h2>
+      <p>
+        The next major technical step is to make resources and workflow semantics fully generic.
+        The current optimizer still contains some design-variable assumptions originating in the
+        original demonstration process.
+      </p>
+
+      <p>
+        A fully generic formulation would automatically create resource-capacity variables from an
+        uploaded event log, allowing arbitrary resource groups such as underwriters, claims adjusters,
+        controllers, robotic automation, external vendors, or operations teams.
+      </p>
+
+      <p>The longer-term direction is:</p>
+      <pre>Operational event data
+        ↓
+Process discovery
+        ↓
+AS-IS digital twin
+        ↓
+Calibration / validation
+        ↓
+Feasibility-space exploration
+        ↓
+Evolving-SVD design analysis
+        ↓
+Robust optimization
+        ↓
+TO-BE process alternatives
+        ↓
+Cost / performance / robustness comparison</pre>
+    </section>
+
+    <section class="section">
+      <h2>Concise technical description</h2>
+      <p>
+        <strong>Process Design Space Explorer</strong> is a process digital-twin and design-optimization
+        platform that combines event-log calibration, discrete-event simulation, process mining,
+        architecture-family search, evolving-SVD/null-space design optimization, and replicated
+        stochastic robustness analysis. It converts operational process data into an editable simulation
+        model and searches for low-cost process designs that reliably satisfy cycle-time, SLA,
+        demand-satisfaction, and capacity constraints.
+      </p>
+    </section>
+
+    <div class="footer">
+      Process Design Space Explorer — technical overview through v0.11.3
+    </div>
+  </div>
+</body>
+</html>

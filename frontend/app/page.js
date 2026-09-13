@@ -1602,6 +1602,24 @@ export default function Home() {
         }
       `}</style>
 
+      <div style={{
+        marginTop:10,
+        marginBottom:6
+      }}>
+        <a
+          href="/about.html"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            color:"#4f46e5",
+            fontWeight:700,
+            textDecoration:"none"
+          }}
+        >
+          About this app: features, algorithms, and technical overview →
+        </a>
+      </div>
+
       <section style={{
         ...card,
         marginTop:18
