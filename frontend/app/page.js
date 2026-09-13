@@ -225,6 +225,32 @@ export default function Home() {
     setCmp
   ] = useState(null);
 
+  const [
+    logFile,
+    setLogFile
+  ] = useState(null);
+
+  const [
+    logPreview,
+    setLogPreview
+  ] = useState(null);
+
+  const [
+    mapping,
+    setMapping
+  ] = useState({
+    case_id:"",
+    activity:"",
+    start_time:"",
+    end_time:"",
+    resource:""
+  });
+
+  const [
+    calibration,
+    setCalibration
+  ] = useState(null);
+
   useEffect(() => {
     if (!runningAction) {
       setElapsed(0);
@@ -360,6 +386,7 @@ export default function Home() {
                 "application/json"
             },
             body:JSON.stringify({
+              model:model || undefined,
               robustness_target:0.90
             })
           },
@@ -383,6 +410,483 @@ export default function Home() {
           "Comparing AS-IS vs TO-BE"
         )
       );
+
+    } catch(e) {
+      setStatus(e.message);
+    }
+  }
+
+
+  function getResourceKey(m) {
+    if (!m) return null;
+
+    return Object.keys(m).find(
+      k =>
+        Array.isArray(m[k])
+        && m[k].length
+        && typeof m[k][0] === "object"
+        && m[k][0] !== null
+        && Object.prototype.hasOwnProperty.call(
+          m[k][0],
+          "capacity"
+        )
+        && k !== "variables"
+    ) || null;
+  }
+
+  function resourceOptions(m) {
+    const key =
+      getResourceKey(m);
+
+    if (!key) return [];
+
+    return m[key]
+      .map(r => r.id)
+      .filter(Boolean);
+  }
+
+  function updateActivity(
+    id,
+    field,
+    value
+  ) {
+    setModel(prev => {
+      if (!prev) return prev;
+
+      return {
+        ...prev,
+        activities:
+          prev.activities.map(a => {
+            if (a.id !== id) {
+              return a;
+            }
+
+            if (
+              field
+              === "mean_minutes"
+            ) {
+              return {
+                ...a,
+                service_time:{
+                  ...a.service_time,
+                  mean_minutes:
+                    Number(value)
+                }
+              };
+            }
+
+            return {
+              ...a,
+              [field]:value
+            };
+          })
+      };
+    });
+  }
+
+  function updateTransition(
+    index,
+    field,
+    value
+  ) {
+    setModel(prev => {
+      if (!prev) return prev;
+
+      const transitions =
+        [...prev.transitions];
+
+      transitions[index] = {
+        ...transitions[index],
+        [field]:
+          field === "probability"
+          ? Number(value)
+          : value
+      };
+
+      return {
+        ...prev,
+        transitions
+      };
+    });
+  }
+
+  function updateResource(
+    id,
+    field,
+    value
+  ) {
+    setModel(prev => {
+      if (!prev) return prev;
+
+      const key =
+        getResourceKey(prev);
+
+      if (!key) return prev;
+
+      return {
+        ...prev,
+        [key]:
+          prev[key].map(r =>
+            r.id === id
+            ? {
+                ...r,
+                [field]:
+                  Number(value)
+              }
+            : r
+          )
+      };
+    });
+  }
+
+  function addActivity() {
+    setModel(prev => {
+      if (
+        !prev
+        || !prev.activities?.length
+      ) {
+        return prev;
+      }
+
+      const base =
+        JSON.parse(
+          JSON.stringify(
+            prev.activities[0]
+          )
+        );
+
+      const id =
+        `activity_${Date.now()}`;
+
+      base.id = id;
+      base.name =
+        "New Activity";
+
+      if (base.service_time) {
+        base.service_time = {
+          ...base.service_time,
+          mean_minutes:5
+        };
+      }
+
+      const resources =
+        resourceOptions(prev);
+
+      if (
+        resources.length
+        && Object.prototype
+          .hasOwnProperty.call(
+            base,
+            "resource_pool"
+          )
+      ) {
+        base.resource_pool =
+          resources[0];
+      }
+
+      const architectures =
+        Array.isArray(
+          prev.architectures
+        )
+        ? prev.architectures.map(
+            a => ({
+              ...a,
+              enabled_activities:
+                Array.isArray(
+                  a.enabled_activities
+                )
+                ? [
+                    ...a
+                      .enabled_activities,
+                    id
+                  ]
+                : a
+                  .enabled_activities
+            })
+          )
+        : prev.architectures;
+
+      return {
+        ...prev,
+        activities:[
+          ...prev.activities,
+          base
+        ],
+        architectures
+      };
+    });
+  }
+
+  function removeActivity(id) {
+    setModel(prev => {
+      if (
+        !prev
+        || id
+          === prev.start_activity
+        || id
+          === prev.end_activity
+      ) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        activities:
+          prev.activities.filter(
+            a => a.id !== id
+          ),
+        transitions:
+          prev.transitions.filter(
+            t =>
+              t.source !== id
+              && t.target !== id
+          ),
+        architectures:
+          Array.isArray(
+            prev.architectures
+          )
+          ? prev.architectures.map(
+              a => ({
+                ...a,
+                enabled_activities:
+                  Array.isArray(
+                    a.enabled_activities
+                  )
+                  ? a
+                    .enabled_activities
+                    .filter(
+                      x => x !== id
+                    )
+                  : a
+                    .enabled_activities
+              })
+            )
+          : prev.architectures
+      };
+    });
+  }
+
+  function addTransition() {
+    setModel(prev => {
+      if (
+        !prev
+        || !prev.transitions?.length
+      ) {
+        return prev;
+      }
+
+      const t =
+        JSON.parse(
+          JSON.stringify(
+            prev.transitions[0]
+          )
+        );
+
+      t.source =
+        prev.start_activity;
+
+      t.target =
+        prev.end_activity;
+
+      t.probability = 1;
+
+      return {
+        ...prev,
+        transitions:[
+          ...prev.transitions,
+          t
+        ]
+      };
+    });
+  }
+
+  function removeTransition(
+    index
+  ) {
+    setModel(prev => {
+      if (!prev) return prev;
+
+      return {
+        ...prev,
+        transitions:
+          prev.transitions.filter(
+            (_,i) => i !== index
+          )
+      };
+    });
+  }
+
+  function downloadModel() {
+    if (!model) return;
+
+    const blob =
+      new Blob(
+        [
+          JSON.stringify(
+            model,
+            null,
+            2
+          )
+        ],
+        {
+          type:
+            "application/json"
+        }
+      );
+
+    const url =
+      URL.createObjectURL(
+        blob
+      );
+
+    const a =
+      document.createElement(
+        "a"
+      );
+
+    a.href = url;
+    a.download =
+      "process_model.json";
+
+    document.body
+      .appendChild(a);
+
+    a.click();
+    a.remove();
+
+    URL.revokeObjectURL(
+      url
+    );
+  }
+
+  async function previewEventLog() {
+    if (!logFile) {
+      setStatus(
+        "Choose an event-log file first"
+      );
+      return;
+    }
+
+    try {
+      const form =
+        new FormData();
+
+      form.append(
+        "file",
+        logFile
+      );
+
+      const data =
+        await call(
+          "/api/event-log/preview",
+          {
+            method:"POST",
+            body:form
+          },
+          "Inspecting event log"
+        );
+
+      setLogPreview(data);
+
+      setMapping({
+        case_id:
+          data.guesses
+          ?.case_id || "",
+        activity:
+          data.guesses
+          ?.activity || "",
+        start_time:
+          data.guesses
+          ?.start_time || "",
+        end_time:
+          data.guesses
+          ?.end_time || "",
+        resource:
+          data.guesses
+          ?.resource || ""
+      });
+
+    } catch(e) {
+      setStatus(e.message);
+    }
+  }
+
+  async function calibrateEventLog() {
+    if (
+      !logFile
+      || !mapping.case_id
+      || !mapping.activity
+      || !mapping.start_time
+    ) {
+      setStatus(
+        "Map Case ID, Activity, and Start Time first"
+      );
+      return;
+    }
+
+    try {
+      const form =
+        new FormData();
+
+      form.append(
+        "file",
+        logFile
+      );
+
+      form.append(
+        "case_col",
+        mapping.case_id
+      );
+
+      form.append(
+        "activity_col",
+        mapping.activity
+      );
+
+      form.append(
+        "start_col",
+        mapping.start_time
+      );
+
+      form.append(
+        "end_col",
+        mapping.end_time || ""
+      );
+
+      form.append(
+        "resource_col",
+        mapping.resource || ""
+      );
+
+      form.append(
+        "sla_minutes",
+        String(
+          model?.sla_minutes
+          || 360
+        )
+      );
+
+      const data =
+        await call(
+          "/api/event-log/calibrate",
+          {
+            method:"POST",
+            body:form
+          },
+          "Calibrating event log"
+        );
+
+      setModel(
+        data.model
+      );
+
+      setCalibration(
+        data.summary
+      );
+
+      setSim(null);
+      setOpt(null);
+      setCmp(null);
 
     } catch(e) {
       setStatus(e.message);
@@ -612,6 +1116,675 @@ export default function Home() {
               </div>
             )}
           </div>
+        </section>
+      }
+
+
+      <section style={{
+        ...card,
+        marginTop:18
+      }}>
+        <h2 style={{
+          marginTop:0
+        }}>
+          Event-log calibration
+        </h2>
+
+        <p style={{
+          color:"#4b5563",
+          lineHeight:1.5
+        }}>
+          Upload a CSV or Excel event log. The app discovers
+          activities, routing probabilities, rework loops,
+          service-time estimates, arrival rate, and observed
+          resource counts, then creates an editable process model.
+        </p>
+
+        <div style={{
+          display:"flex",
+          gap:10,
+          flexWrap:"wrap",
+          alignItems:"center"
+        }}>
+          <input
+            type="file"
+            accept=".csv,.xlsx,.xls"
+            disabled={busy}
+            onChange={
+              e => {
+                setLogFile(
+                  e.target.files?.[0]
+                  || null
+                );
+                setLogPreview(null);
+                setCalibration(null);
+              }
+            }
+          />
+
+          <button
+            disabled={
+              busy || !logFile
+            }
+            style={{
+              ...buttonStyle,
+              opacity:
+                busy || !logFile
+                ? 0.55
+                : 1
+            }}
+            onClick={
+              previewEventLog
+            }
+          >
+            Inspect columns
+          </button>
+        </div>
+
+        {logPreview &&
+          <>
+            <div style={{
+              marginTop:14,
+              fontSize:13,
+              color:"#6b7280"
+            }}>
+              {logPreview.rows} rows · {
+                logPreview.columns.length
+              } columns · {
+                logPreview.filename
+              }
+            </div>
+
+            <div style={{
+              display:"grid",
+              gridTemplateColumns:
+                "repeat(auto-fit,minmax(180px,1fr))",
+              gap:10,
+              marginTop:12
+            }}>
+              {[
+                ["case_id","Case ID",true],
+                ["activity","Activity",true],
+                ["start_time","Start time",true],
+                ["end_time","End time",false],
+                ["resource","Resource",false]
+              ].map(
+                ([key,label,required]) =>
+                  <label
+                    key={key}
+                    style={{
+                      fontSize:12,
+                      color:"#4b5563"
+                    }}
+                  >
+                    {label}{
+                      required
+                      ? " *"
+                      : ""
+                    }
+
+                    <select
+                      value={
+                        mapping[key]
+                      }
+                      onChange={
+                        e =>
+                          setMapping(
+                            prev => ({
+                              ...prev,
+                              [key]:
+                                e
+                                .target
+                                .value
+                            })
+                          )
+                      }
+                      style={{
+                        width:"100%",
+                        marginTop:5,
+                        padding:8
+                      }}
+                    >
+                      <option value="">
+                        -- not mapped --
+                      </option>
+
+                      {
+                        logPreview
+                        .columns
+                        .map(c =>
+                          <option
+                            key={c}
+                            value={c}
+                          >
+                            {c}
+                          </option>
+                        )
+                      }
+                    </select>
+                  </label>
+              )}
+            </div>
+
+            <button
+              disabled={busy}
+              style={{
+                ...buttonStyle,
+                marginTop:12,
+                opacity:
+                  busy ? 0.55 : 1
+              }}
+              onClick={
+                calibrateEventLog
+              }
+            >
+              Calibrate and load model
+            </button>
+          </>
+        }
+
+        {calibration &&
+          <div style={{
+            ...card,
+            background:"#fafafa",
+            marginTop:14
+          }}>
+            <b>
+              Calibration summary
+            </b>
+
+            <div style={{
+              fontSize:13,
+              color:"#4b5563",
+              marginTop:6
+            }}>
+              Cases {
+                calibration.cases
+              } · Activities {
+                calibration.activities
+              } · Arrival rate {
+                Number(
+                  calibration
+                  .arrival_rate_per_hour
+                ).toFixed(2)
+              }/hr · Estimated analysts {
+                calibration
+                .estimated_analyst_capacity
+              } · Repeat events {
+                calibration
+                .repeat_event_count
+              }
+            </div>
+
+            <div style={{
+              fontSize:12,
+              color:"#6b7280",
+              marginTop:5
+            }}>
+              Start activity: {
+                calibration
+                .start_activity
+              }. The calibrated model is now the active
+              model used by Simulation and Optimization.
+            </div>
+          </div>
+        }
+      </section>
+
+      {model &&
+        <section style={{
+          ...card,
+          marginTop:18
+        }}>
+          <div style={{
+            display:"flex",
+            justifyContent:"space-between",
+            alignItems:"center",
+            gap:12,
+            flexWrap:"wrap"
+          }}>
+            <div>
+              <h2 style={{
+                margin:"0 0 4px"
+              }}>
+                Visual Process Modeler
+              </h2>
+
+              <div style={{
+                fontSize:13,
+                color:"#6b7280"
+              }}>
+                Edit the active process model before running
+                simulation or robust optimization.
+              </div>
+            </div>
+
+            <div style={{
+              display:"flex",
+              gap:8,
+              flexWrap:"wrap"
+            }}>
+              <button
+                disabled={busy}
+                style={buttonStyle}
+                onClick={addActivity}
+              >
+                Add activity
+              </button>
+
+              <button
+                disabled={busy}
+                style={buttonStyle}
+                onClick={addTransition}
+              >
+                Add transition
+              </button>
+
+              <button
+                disabled={busy}
+                style={buttonStyle}
+                onClick={downloadModel}
+              >
+                Download model JSON
+              </button>
+            </div>
+          </div>
+
+          <div style={{
+            marginTop:16,
+            overflowX:"auto",
+            padding:"12px 4px"
+          }}>
+            <div style={{
+              display:"flex",
+              alignItems:"center",
+              minWidth:"max-content"
+            }}>
+              {model.activities.map(
+                (a,i) =>
+                  <div
+                    key={a.id}
+                    style={{
+                      display:"flex",
+                      alignItems:"center"
+                    }}
+                  >
+                    <div style={{
+                      minWidth:155,
+                      padding:"12px 14px",
+                      border:"1px solid #c7d2fe",
+                      borderRadius:12,
+                      background:
+                        a.id
+                        === model
+                        .start_activity
+                        ? "#eef2ff"
+                        : a.id
+                          === model
+                          .end_activity
+                          ? "#ecfdf5"
+                          : "#fff"
+                    }}>
+                      <div style={{
+                        fontWeight:700
+                      }}>
+                        {a.name}
+                      </div>
+
+                      <div style={{
+                        fontSize:12,
+                        color:"#6b7280",
+                        marginTop:3
+                      }}>
+                        {
+                          Number(
+                            a
+                            .service_time
+                            ?.mean_minutes
+                            || 0
+                          ).toFixed(1)
+                        } min · {
+                          a.resource_pool
+                          || "no pool"
+                        }
+                      </div>
+                    </div>
+
+                    {i <
+                      model
+                      .activities
+                      .length - 1
+                      &&
+                      <div style={{
+                        padding:"0 8px",
+                        color:"#9ca3af",
+                        fontSize:22
+                      }}>
+                        →
+                      </div>
+                    }
+                  </div>
+              )}
+            </div>
+          </div>
+
+          <h3>
+            Activities
+          </h3>
+
+          <div style={{
+            overflowX:"auto"
+          }}>
+            <table style={{
+              width:"100%",
+              borderCollapse:"collapse",
+              fontSize:13
+            }}>
+              <thead>
+                <tr>
+                  <th align="left">
+                    Activity
+                  </th>
+                  <th align="left">
+                    Mean service (min)
+                  </th>
+                  <th align="left">
+                    Resource pool
+                  </th>
+                  <th />
+                </tr>
+              </thead>
+
+              <tbody>
+                {model.activities.map(
+                  a =>
+                    <tr key={a.id}>
+                      <td style={{
+                        padding:"7px 4px"
+                      }}>
+                        <input
+                          value={a.name}
+                          onChange={
+                            e =>
+                              updateActivity(
+                                a.id,
+                                "name",
+                                e.target.value
+                              )
+                          }
+                        />
+                      </td>
+
+                      <td>
+                        <input
+                          type="number"
+                          min="0.01"
+                          step="0.1"
+                          value={
+                            a
+                            .service_time
+                            ?.mean_minutes
+                            ?? 0
+                          }
+                          onChange={
+                            e =>
+                              updateActivity(
+                                a.id,
+                                "mean_minutes",
+                                e.target.value
+                              )
+                          }
+                          style={{
+                            width:100
+                          }}
+                        />
+                      </td>
+
+                      <td>
+                        <select
+                          value={
+                            a.resource_pool
+                            || ""
+                          }
+                          onChange={
+                            e =>
+                              updateActivity(
+                                a.id,
+                                "resource_pool",
+                                e.target.value
+                              )
+                          }
+                        >
+                          {
+                            resourceOptions(
+                              model
+                            )
+                            .map(r =>
+                              <option
+                                key={r}
+                                value={r}
+                              >
+                                {r}
+                              </option>
+                            )
+                          }
+                        </select>
+                      </td>
+
+                      <td>
+                        {
+                          a.id
+                          !== model
+                          .start_activity
+                          && a.id
+                          !== model
+                          .end_activity
+                          &&
+                          <button
+                            style={buttonStyle}
+                            onClick={
+                              () =>
+                                removeActivity(
+                                  a.id
+                                )
+                            }
+                          >
+                            Remove
+                          </button>
+                        }
+                      </td>
+                    </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <h3>
+            Routing / transitions
+          </h3>
+
+          <div style={{
+            overflowX:"auto"
+          }}>
+            <table style={{
+              width:"100%",
+              borderCollapse:"collapse",
+              fontSize:13
+            }}>
+              <thead>
+                <tr>
+                  <th align="left">
+                    From
+                  </th>
+                  <th align="left">
+                    To
+                  </th>
+                  <th align="left">
+                    Probability
+                  </th>
+                  <th />
+                </tr>
+              </thead>
+
+              <tbody>
+                {model.transitions.map(
+                  (t,i) =>
+                    <tr key={i}>
+                      <td>
+                        <select
+                          value={t.source}
+                          onChange={
+                            e =>
+                              updateTransition(
+                                i,
+                                "source",
+                                e.target.value
+                              )
+                          }
+                        >
+                          {
+                            model
+                            .activities
+                            .map(a =>
+                              <option
+                                key={a.id}
+                                value={a.id}
+                              >
+                                {a.name}
+                              </option>
+                            )
+                          }
+                        </select>
+                      </td>
+
+                      <td>
+                        <select
+                          value={t.target}
+                          onChange={
+                            e =>
+                              updateTransition(
+                                i,
+                                "target",
+                                e.target.value
+                              )
+                          }
+                        >
+                          {
+                            model
+                            .activities
+                            .map(a =>
+                              <option
+                                key={a.id}
+                                value={a.id}
+                              >
+                                {a.name}
+                              </option>
+                            )
+                          }
+                        </select>
+                      </td>
+
+                      <td>
+                        <input
+                          type="number"
+                          min="0"
+                          max="1"
+                          step="0.01"
+                          value={
+                            t.probability
+                          }
+                          onChange={
+                            e =>
+                              updateTransition(
+                                i,
+                                "probability",
+                                e.target.value
+                              )
+                          }
+                          style={{
+                            width:90
+                          }}
+                        />
+                      </td>
+
+                      <td>
+                        <button
+                          style={buttonStyle}
+                          onClick={
+                            () =>
+                              removeTransition(
+                                i
+                              )
+                          }
+                        >
+                          Remove
+                        </button>
+                      </td>
+                    </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {getResourceKey(model) &&
+            <>
+              <h3>
+                Resource capacities
+              </h3>
+
+              <div style={{
+                display:"grid",
+                gridTemplateColumns:
+                  "repeat(auto-fit,minmax(180px,1fr))",
+                gap:10
+              }}>
+                {
+                  model[
+                    getResourceKey(
+                      model
+                    )
+                  ].map(r =>
+                    <label
+                      key={r.id}
+                      style={{
+                        ...card,
+                        fontSize:12
+                      }}
+                    >
+                      <b>
+                        {r.name || r.id}
+                      </b>
+
+                      <div style={{
+                        marginTop:6
+                      }}>
+                        Capacity
+                      </div>
+
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={r.capacity}
+                        onChange={
+                          e =>
+                            updateResource(
+                              r.id,
+                              "capacity",
+                              e.target.value
+                            )
+                        }
+                        style={{
+                          width:"100%",
+                          marginTop:4
+                        }}
+                      />
+                    </label>
+                  )
+                }
+              </div>
+            </>
+          }
         </section>
       }
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from io import StringIO
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import pandas as pd
@@ -10,6 +10,7 @@ from .core.demo import DEMO_MODEL
 from .core.model import ProcessModel
 from .core.mining import mine_log, compare_mined_logs
 from .core.simulation import simulate
+from .core.calibration import preview_event_log, calibrate_event_log
 from .core.optimization import (
     Constraint,
     optimize_families,
@@ -18,7 +19,7 @@ from .core.optimization import (
 
 app = FastAPI(
     title="Process Design Space Platform API",
-    version="0.10.0",
+    version="0.11.0",
 )
 
 app.add_middleware(
@@ -90,7 +91,7 @@ class OptimizationRequest(BaseModel):
 def health():
     return {
         "ok": True,
-        "version": "0.10.0",
+        "version": "0.11.0",
     }
 
 
@@ -159,6 +160,64 @@ def simulate_endpoint(
             status_code=400,
             detail=str(e),
         )
+
+
+@app.post("/api/event-log/preview")
+async def event_log_preview(
+    file: UploadFile = File(...),
+):
+    try:
+        content = await file.read()
+
+        return preview_event_log(
+            file.filename or "event_log.csv",
+            content,
+        )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=str(e),
+        )
+
+
+@app.post("/api/event-log/calibrate")
+async def event_log_calibrate(
+    file: UploadFile = File(...),
+    case_col: str = Form(...),
+    activity_col: str = Form(...),
+    start_col: str = Form(...),
+    end_col: str = Form(""),
+    resource_col: str = Form(""),
+    sla_minutes: float = Form(360.0),
+    analyst_unit_cost: float = Form(120000.0),
+):
+    try:
+        content = await file.read()
+
+        return calibrate_event_log(
+            file.filename or "event_log.csv",
+            content,
+            DEMO_MODEL,
+            case_col=case_col,
+            activity_col=activity_col,
+            start_col=start_col,
+            end_col=(
+                end_col or None
+            ),
+            resource_col=(
+                resource_col or None
+            ),
+            sla_minutes=sla_minutes,
+            analyst_unit_cost=analyst_unit_cost,
+        )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=str(e),
+        )
+
 
 
 @app.post("/api/mine")
