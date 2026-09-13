@@ -19,7 +19,7 @@ from .core.optimization import (
 
 app = FastAPI(
     title="Process Design Space Platform API",
-    version="0.11.0",
+    version="0.12.0",
 )
 
 app.add_middleware(
@@ -87,11 +87,20 @@ class OptimizationRequest(BaseModel):
     robustness_cases: int = 1200
 
 
+class CompareRequest(BaseModel):
+    model: ProcessModel = DEMO_MODEL
+    baseline_architecture_id: str | None = None
+    future_architecture_id: str | None = None
+    future_design: dict[str, float] = {}
+    cases: int = 1200
+    seed: int = 2
+
+
 @app.get("/api/health")
 def health():
     return {
         "ok": True,
-        "version": "0.11.0",
+        "version": "0.12.0",
     }
 
 
@@ -144,14 +153,13 @@ def simulate_endpoint(
             "realized_arrival_rate_per_hour"
         ] = float(realized)
 
-        out["metrics"][
-            "flow_balance"
-        ] = float(
-            out["metrics"][
-                "throughput_per_hour"
-            ]
+        raw_flow_balance = float(
+            out["metrics"]["throughput_per_hour"]
             / max(float(realized), 1e-9)
         )
+
+        out["metrics"]["raw_flow_balance"] = raw_flow_balance
+        out["metrics"]["flow_balance"] = min(raw_flow_balance, 1.0)
 
         return out
 
@@ -195,22 +203,35 @@ async def event_log_calibrate(
     try:
         content = await file.read()
 
-        return calibrate_event_log(
+        result = calibrate_event_log(
             file.filename or "event_log.csv",
             content,
             DEMO_MODEL,
             case_col=case_col,
             activity_col=activity_col,
             start_col=start_col,
-            end_col=(
-                end_col or None
-            ),
-            resource_col=(
-                resource_col or None
-            ),
+            end_col=(end_col or None),
+            resource_col=(resource_col or None),
             sla_minutes=sla_minutes,
             analyst_unit_cost=analyst_unit_cost,
         )
+
+        calibrated_model = ProcessModel.model_validate(result["model"])
+        design = {
+            v.name: float(v.value)
+            for v in calibrated_model.variables
+            if v.kind in ("continuous", "quantized")
+        }
+        capacity = calculate_structural_capacity(
+            calibrated_model,
+            calibrated_model.architectures[0].id,
+            design,
+        )
+        result["summary"]["bottleneck_resource"] = capacity["bottleneck_resource"]
+        result["summary"]["max_resource_utilization"] = capacity["max_resource_utilization"]
+        result["summary"]["capacity_status"] = capacity["capacity_status"]
+        result["summary"]["resource_utilizations"] = capacity["resource_utilizations"]
+        return result
 
     except Exception as e:
         raise HTTPException(
@@ -308,50 +329,67 @@ def optimize_endpoint(
 
 
 @app.post("/api/compare")
-def compare_endpoint():
-    actual = simulate(
-        DEMO_MODEL,
-        "baseline",
-        {},
-        cases=1200,
-        seed=2,
-        emit_log=True,
-    )
+def compare_endpoint(req: CompareRequest):
+    try:
+        baseline_arch = (
+            req.baseline_architecture_id
+            or req.model.architectures[0].id
+        )
+        future_arch = (
+            req.future_architecture_id
+            or baseline_arch
+        )
 
-    optimized_design = {
-        "analyst_capacity": 6,
-        "senior_capacity": 2,
-        "qa_capacity": 2,
-        "automation_level": 0.45,
-        "qa_rework_rate": 0.04,
-    }
+        actual = simulate(
+            req.model,
+            baseline_arch,
+            {},
+            cases=req.cases,
+            seed=req.seed,
+            emit_log=True,
+        )
+        actual_capacity = calculate_structural_capacity(
+            req.model,
+            baseline_arch,
+            {},
+        )
+        actual["metrics"]["max_resource_utilization"] = actual_capacity["max_resource_utilization"]
 
-    future = simulate(
-        DEMO_MODEL,
-        "straight_through",
-        optimized_design,
-        cases=1200,
-        seed=2,
-        emit_log=True,
-    )
+        future = simulate(
+            req.model,
+            future_arch,
+            req.future_design,
+            cases=req.cases,
+            seed=req.seed,
+            emit_log=True,
+        )
+        future_capacity = calculate_structural_capacity(
+            req.model,
+            future_arch,
+            req.future_design,
+        )
+        future["metrics"]["max_resource_utilization"] = future_capacity["max_resource_utilization"]
 
-    a = pd.DataFrame(
-        actual["event_log"]
-    )
+        for result in (actual, future):
+            realized = float(result["metrics"].get("realized_arrival_rate_per_hour", req.model.arrival_rate_per_hour))
+            raw = float(result["metrics"]["throughput_per_hour"] / max(realized, 1e-9))
+            result["metrics"]["raw_flow_balance"] = raw
+            result["metrics"]["flow_balance"] = min(raw, 1.0)
 
-    b = pd.DataFrame(
-        future["event_log"]
-    )
+        a = pd.DataFrame(actual["event_log"])
+        b = pd.DataFrame(future["event_log"])
 
-    return {
-        "baseline_metrics": actual[
-            "metrics"
-        ],
-        "future_metrics": future[
-            "metrics"
-        ],
-        "mined_comparison": compare_mined_logs(
-            a,
-            b,
-        ),
-    }
+        return {
+            "baseline_architecture": baseline_arch,
+            "future_architecture": future_arch,
+            "future_design": req.future_design,
+            "baseline_metrics": actual["metrics"],
+            "future_metrics": future["metrics"],
+            "baseline_capacity": actual_capacity,
+            "future_capacity": future_capacity,
+            "mined_comparison": compare_mined_logs(a, b),
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+

@@ -539,7 +539,7 @@ Compare architectures</pre>
     <section class="section" id="limitations">
       <h2>10. Current limitations</h2>
       <ul>
-        <li>Generic resource modeling is still incomplete; calibrated activities initially use existing resource-pool semantics.</li>
+        <li>Resource groups are inferred heuristically from event-log performer labels; users should review/edit inferred pools when source systems do not provide an explicit resource-group field.</li>
         <li>Architecture generation is primarily predefined rather than automatically invented.</li>
         <li>XES import is not yet implemented.</li>
         <li>Process discovery is currently lightweight rather than a full PM4Py/Petri-net/conformance stack.</li>
@@ -569,6 +569,7 @@ Compare architectures</pre>
           <tr><td>v0.11.1</td><td>Defensive frontend array handling</td></tr>
           <tr><td>v0.11.2</td><td>General node-edge workflow graph</td></tr>
           <tr><td>v0.11.3</td><td>Correct architecture-level connectivity and transition persistence</td></tr>
+          <tr><td>v0.12</td><td>Generic resource pools, generic capacity variables, resource calibration, AS-IS digital-twin summary, and generic AS-IS vs TO-BE comparison</td></tr>
         </tbody>
       </table>
     </section>
@@ -620,7 +621,7 @@ Cost / performance / robustness comparison</pre>
     </section>
 
     <div class="footer">
-      Process Design Space Explorer — technical overview through v0.11.3
+      Process Design Space Explorer — technical overview through v0.12.0
     </div>
   </div>
 </body>

@@ -932,11 +932,35 @@ export default function Home() {
 
   async function runCompare() {
     try {
+      const selected =
+        opt?.results?.[0];
+
+      if (!model || !selected?.best) {
+        setStatus(
+          "Run simulation and optimization before comparing AS-IS vs TO-BE"
+        );
+        return;
+      }
+
       setCmp(
         await call(
           "/api/compare",
           {
-            method:"POST"
+            method:"POST",
+            headers:{
+              "Content-Type":"application/json"
+            },
+            body:JSON.stringify({
+              model,
+              baseline_architecture_id:
+                model.architectures?.[0]?.id,
+              future_architecture_id:
+                selected.architecture,
+              future_design:
+                selected.best.design,
+              cases:1200,
+              seed:2
+            })
           },
           "Comparing AS-IS vs TO-BE"
         )
@@ -1078,19 +1102,55 @@ export default function Home() {
 
       if (!key) return prev;
 
-      return {
+      const numericValue =
+        Number(value);
+
+      const next = {
         ...prev,
         [key]:
           prev[key].map(r =>
             r.id === id
             ? {
                 ...r,
-                [field]:
-                  Number(value)
+                [field]:numericValue
               }
             : r
           )
       };
+
+      if (
+        field === "capacity"
+        && Array.isArray(prev.variables)
+      ) {
+        const variableName =
+          `resource_capacity__${id}`;
+
+        next.variables =
+          prev.variables.map(v =>
+            v.name === variableName
+            ? {
+                ...v,
+                value:numericValue,
+                lower:
+                  v.lower == null
+                  ? 1
+                  : Math.min(
+                      Number(v.lower),
+                      numericValue
+                    ),
+                upper:
+                  v.upper == null
+                  ? Math.max(2,numericValue*2)
+                  : Math.max(
+                      Number(v.upper),
+                      numericValue
+                    )
+              }
+            : v
+          );
+      }
+
+      return next;
     });
   }
 
@@ -1677,15 +1737,17 @@ export default function Home() {
           </button>
 
           <button
-            disabled={busy}
+            disabled={busy || !model || !opt?.results?.[0]?.best}
             style={{
               ...buttonStyle,
               opacity:
-                busy ? 0.55 : 1
+                busy || !model || !opt?.results?.[0]?.best
+                ? 0.55
+                : 1
             }}
             onClick={runCompare}
           >
-            Compare AS-IS vs TO-BE
+            Compare selected TO-BE
           </button>
         </div>
       </section>
@@ -1905,42 +1967,89 @@ export default function Home() {
             marginTop:14
           }}>
             <b>
-              Calibration summary
+              Calibrated AS-IS digital twin
             </b>
 
             <div style={{
-              fontSize:13,
-              color:"#4b5563",
-              marginTop:6
+              display:"grid",
+              gridTemplateColumns:
+                "repeat(auto-fit,minmax(150px,1fr))",
+              gap:10,
+              marginTop:12
             }}>
-              Cases {
-                calibration.cases
-              } · Activities {
-                calibration.activities
-              } · Arrival rate {
-                Number(
-                  calibration
-                  .arrival_rate_per_hour
-                ).toFixed(2)
-              }/hr · Estimated analysts {
-                calibration
-                .estimated_analyst_capacity
-              } · Repeat events {
-                calibration
-                .repeat_event_count
-              }
+              <Metric
+                label="Cases"
+                value={calibration.cases}
+              />
+              <Metric
+                label="Activities"
+                value={calibration.activities}
+              />
+              <Metric
+                label="Resource pools"
+                value={calibration.resource_pools}
+              />
+              <Metric
+                label="Arrival rate / hr"
+                value={Number(
+                  calibration.arrival_rate_per_hour
+                ).toFixed(2)}
+              />
+              <Metric
+                label="Observed P95 cycle"
+                value={`${Number(
+                  calibration.p95_cycle_minutes_observed
+                ).toFixed(1)} min`}
+              />
+              <Metric
+                label="Observed SLA"
+                value={fmtPct(
+                  calibration.sla_attainment_observed
+                )}
+              />
+              <Metric
+                label="Cases with rework"
+                value={fmtPct(
+                  calibration.rework_case_rate
+                )}
+              />
+              <Metric
+                label="Top variant share"
+                value={fmtPct(
+                  calibration.most_common_variant_share
+                )}
+              />
+              <Metric
+                label="Structural bottleneck"
+                value={
+                  calibration.bottleneck_resource
+                  || "none"
+                }
+              />
+              <Metric
+                label="Max utilization"
+                value={fmtPct(
+                  calibration.max_resource_utilization
+                  || 0
+                )}
+              />
+              <Metric
+                label="Capacity state"
+                value={
+                  calibration.capacity_status
+                  || "n/a"
+                }
+              />
             </div>
 
             <div style={{
               fontSize:12,
               color:"#6b7280",
-              marginTop:5
+              marginTop:10
             }}>
-              Start activity: {
-                calibration
-                .start_activity
-              }. The calibrated model is now the active
-              model used by Simulation and Optimization.
+              Start activity: {calibration.start_activity}. The calibrated
+              model now contains generic resource pools and capacity design
+              variables and is used directly by Simulation and Optimization.
             </div>
           </div>
         }
@@ -2331,6 +2440,31 @@ export default function Home() {
                             updateResource(
                               r.id,
                               "capacity",
+                              e.target.value
+                            )
+                        }
+                        style={{
+                          width:"100%",
+                          marginTop:4
+                        }}
+                      />
+
+                      <div style={{
+                        marginTop:8
+                      }}>
+                        Cost / hour
+                      </div>
+
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={r.cost_per_hour ?? 75}
+                        onChange={
+                          e =>
+                            updateResource(
+                              r.id,
+                              "cost_per_hour",
                               e.target.value
                             )
                         }
@@ -2884,54 +3018,114 @@ export default function Home() {
           <h2 style={{
             marginTop:0
           }}>
-            AS-IS vs TO-BE
+            AS-IS vs selected TO-BE
           </h2>
 
           <div style={{
-            display:"grid",
-            gridTemplateColumns:
-              "repeat(2,minmax(0,1fr))",
-            gap:16
+            fontSize:13,
+            color:"#6b7280",
+            marginBottom:12
           }}>
-            <div>
-              <h3>
-                Baseline
-              </h3>
+            {cmp.baseline_architecture} → {cmp.future_architecture}
+          </div>
 
-              <pre style={{
-                whiteSpace:"pre-wrap",
-                fontSize:13
-              }}>
-                {
-                  JSON.stringify(
-                    cmp
-                    .baseline_metrics,
-                    null,
-                    2
-                  )
-                }
-              </pre>
-            </div>
-
-            <div>
-              <h3>
-                Future state
-              </h3>
-
-              <pre style={{
-                whiteSpace:"pre-wrap",
-                fontSize:13
-              }}>
-                {
-                  JSON.stringify(
-                    cmp
-                    .future_metrics,
-                    null,
-                    2
-                  )
-                }
-              </pre>
-            </div>
+          <div style={{
+            overflowX:"auto"
+          }}>
+            <table style={{
+              width:"100%",
+              borderCollapse:"collapse",
+              fontSize:13
+            }}>
+              <thead>
+                <tr>
+                  <th align="left" style={{padding:8}}>Metric</th>
+                  <th align="right" style={{padding:8}}>AS-IS</th>
+                  <th align="right" style={{padding:8}}>TO-BE</th>
+                  <th align="right" style={{padding:8}}>Change</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[
+                  [
+                    "Annual cost",
+                    cmp.baseline_metrics.annual_cost,
+                    cmp.future_metrics.annual_cost,
+                    money,
+                    true
+                  ],
+                  [
+                    "Throughput / hr",
+                    cmp.baseline_metrics.throughput_per_hour,
+                    cmp.future_metrics.throughput_per_hour,
+                    v => Number(v).toFixed(2),
+                    false
+                  ],
+                  [
+                    "Flow balance",
+                    cmp.baseline_metrics.flow_balance,
+                    cmp.future_metrics.flow_balance,
+                    fmtFlow,
+                    false
+                  ],
+                  [
+                    "P95 cycle (min)",
+                    cmp.baseline_metrics.p95_cycle_minutes,
+                    cmp.future_metrics.p95_cycle_minutes,
+                    v => Number(v).toFixed(1),
+                    true
+                  ],
+                  [
+                    "SLA attainment",
+                    cmp.baseline_metrics.sla_attainment,
+                    cmp.future_metrics.sla_attainment,
+                    fmtPct,
+                    false
+                  ],
+                  [
+                    "Max utilization",
+                    cmp.baseline_metrics.max_resource_utilization,
+                    cmp.future_metrics.max_resource_utilization,
+                    fmtPct,
+                    true
+                  ],
+                  [
+                    "Backlog growth / hr",
+                    cmp.baseline_metrics.backlog_growth_per_hour,
+                    cmp.future_metrics.backlog_growth_per_hour,
+                    v => Number(v).toFixed(2),
+                    true
+                  ]
+                ].map(([label,a,b,fmt,lowerBetter]) => {
+                  const delta = Number(b) - Number(a);
+                  const pct = Math.abs(Number(a)) > 1e-9
+                    ? 100 * delta / Math.abs(Number(a))
+                    : null;
+                  const improved = lowerBetter
+                    ? delta < 0
+                    : delta > 0;
+                  return (
+                    <tr key={label} style={{borderTop:"1px solid #eee"}}>
+                      <td style={{padding:8}}>{label}</td>
+                      <td align="right" style={{padding:8}}>{fmt(a)}</td>
+                      <td align="right" style={{padding:8,fontWeight:700}}>{fmt(b)}</td>
+                      <td align="right" style={{
+                        padding:8,
+                        color: Math.abs(delta) < 1e-9
+                          ? "#6b7280"
+                          : improved
+                            ? "#166534"
+                            : "#991b1b"
+                      }}>
+                        {pct === null
+                          ? `${delta >= 0 ? "+" : ""}${delta.toFixed(2)}`
+                          : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         </section>
       }

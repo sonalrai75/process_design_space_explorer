@@ -5,3 +5,5 @@ numpy
 pandas
 openpyxl
 python-multipart
+
+xlrd

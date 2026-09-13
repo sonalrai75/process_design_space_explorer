@@ -27,29 +27,92 @@ def _rng_service_minutes(rng: np.random.Generator, distribution: str, mean: floa
     return max(0.01, float(rng.lognormal(mu, sigma)))
 
 
+def _capacity_variable_name(resource_id: str) -> str:
+    return f"resource_capacity__{resource_id}"
+
+
+def _routing_variable_parts(name: str):
+    prefix = "routing_probability__"
+    if not name.startswith(prefix):
+        return None
+    rest = name[len(prefix):]
+    parts = rest.split("__", 1)
+    if len(parts) != 2:
+        return None
+    return parts[0], parts[1]
+
+
 def apply_design(model: ProcessModel, architecture_id: str, design: dict[str, float]) -> tuple[dict, dict]:
+    """Apply a numeric design to any ProcessModel.
+
+    v0.12 removes the core dependency on demo-specific resource names. Capacity
+    variables now follow ``resource_capacity__<resource_id>``. Legacy
+    ``<resource_id>_capacity`` names are still accepted so older saved models
+    continue to run.
+
+    Routing probabilities can be parameterized generically with
+    ``routing_probability__<source>__<target>``. When one edge is changed, the
+    remaining outgoing probability mass is proportionally rescaled.
+    """
     arch = next(a for a in model.architectures if a.id == architecture_id)
 
-    resources = {r.id: r.capacity for r in model.resources}
-    if "analyst_capacity" in design:
-        resources["analyst"] = int(round(design["analyst_capacity"]))
-    if "senior_capacity" in design:
-        resources["senior"] = int(round(design["senior_capacity"]))
-    if "qa_capacity" in design:
-        resources["qa"] = int(round(design["qa_capacity"]))
+    resources = {r.id: int(r.capacity) for r in model.resources}
+
+    for r in model.resources:
+        generic_name = _capacity_variable_name(r.id)
+        legacy_name = f"{r.id}_capacity"
+        if generic_name in design:
+            resources[r.id] = max(1, int(round(float(design[generic_name]))))
+        elif legacy_name in design:
+            resources[r.id] = max(1, int(round(float(design[legacy_name]))))
+
+    # Extra compatibility for v0.11-era demo JSON.
+    legacy_aliases = {
+        "analyst_capacity": "analyst",
+        "senior_capacity": "senior",
+        "qa_capacity": "qa",
+    }
+    for var_name, rid in legacy_aliases.items():
+        if var_name in design and rid in resources:
+            resources[rid] = max(1, int(round(float(design[var_name]))))
 
     automation = float(design.get("automation_level", 0.0))
-    rework = float(design.get("qa_rework_rate", 0.08))
     service_multiplier = max(0.30, 1.0 - 0.65 * automation)
 
     transitions = [t.model_copy(deep=True) for t in arch.transitions]
-    qa_edges = [t for t in transitions if t.source == "qa"]
-    if qa_edges:
-        for t in qa_edges:
-            if t.target == "review":
-                t.probability = rework
-            elif t.target == "complete":
-                t.probability = 1.0 - rework
+
+    # Generic routing-probability overrides.
+    overrides = []
+    for name, value in design.items():
+        parsed = _routing_variable_parts(str(name))
+        if parsed:
+            source, target = parsed
+            overrides.append((source, target, float(value)))
+
+    # Backward compatibility with the original demonstration variable.
+    if "qa_rework_rate" in design:
+        overrides.append(("qa", "review", float(design["qa_rework_rate"])))
+
+    for source, target, requested in overrides:
+        edges = [t for t in transitions if t.source == source]
+        chosen = next((t for t in edges if t.target == target), None)
+        if chosen is None:
+            continue
+
+        requested = min(1.0, max(0.0, requested))
+        others = [t for t in edges if t is not chosen]
+        chosen.probability = requested
+
+        if others:
+            remaining = max(0.0, 1.0 - requested)
+            old_other_total = sum(max(0.0, float(t.probability)) for t in others)
+            if old_other_total > 0:
+                for t in others:
+                    t.probability = remaining * max(0.0, float(t.probability)) / old_other_total
+            else:
+                share = remaining / len(others)
+                for t in others:
+                    t.probability = share
 
     return {
         "architecture": arch,
@@ -204,9 +267,13 @@ def simulate(
     rmap = model.resource_map()
     for rid, cap in capacities.items():
         if rid in rmap:
-            costs = [a.cost_per_hour for a in model.activities if a.resource_pool == rid]
-            avg_cost = float(np.mean(costs)) if costs else 75.0
-            annual_resource_cost += cap * avg_cost * 2080
+            explicit_cost = rmap[rid].cost_per_hour
+            if explicit_cost is not None:
+                hourly_cost = float(explicit_cost)
+            else:
+                costs = [a.cost_per_hour for a in model.activities if a.resource_pool == rid]
+                hourly_cost = float(np.mean(costs)) if costs else 75.0
+            annual_resource_cost += cap * hourly_cost * 2080
 
     annual_resource_cost += 350_000 * float(cfg["automation"]) ** 1.25
 
