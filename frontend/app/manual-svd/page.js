@@ -5,19 +5,31 @@ import { useEffect, useMemo, useState } from "react";
 const API = process.env.NEXT_PUBLIC_API_BASE || "";
 
 const card = {
-  background:"#fff",
-  border:"1px solid #e5e7eb",
-  borderRadius:14,
-  padding:18,
-  boxShadow:"0 1px 2px rgba(0,0,0,.03)"
+  background:"#ffffff",
+  border:"1px solid #e2e8f0",
+  borderRadius:18,
+  padding:20,
+  boxShadow:"0 8px 28px rgba(15,23,42,.055)"
 };
 
 const buttonStyle = {
-  padding:"9px 13px",
-  borderRadius:8,
-  border:"1px solid #d1d5db",
-  background:"#fff",
-  cursor:"pointer"
+  minHeight:40,
+  padding:"9px 14px",
+  borderRadius:10,
+  border:"1px solid #cbd5e1",
+  background:"#ffffff",
+  color:"#0f172a",
+  fontWeight:650,
+  cursor:"pointer",
+  boxShadow:"0 1px 2px rgba(15,23,42,.04)"
+};
+
+const primaryButtonStyle = {
+  ...buttonStyle,
+  border:"1px solid #4f46e5",
+  background:"#4f46e5",
+  color:"#ffffff",
+  boxShadow:"0 6px 16px rgba(79,70,229,.18)"
 };
 
 const METRICS = [
@@ -80,7 +92,7 @@ function ProcessView({model,design}) {
         gap:10
       }}>
         {(model.resources || []).map(r => (
-          <div key={r.id} style={{...card,background:"#fafafa"}}>
+          <div key={r.id} style={{...card,padding:16,background:"#f8fafc",boxShadow:"none"}}>
             <div style={{fontSize:12,color:"#6b7280"}}>{r.name || r.id}</div>
             <div style={{fontSize:26,fontWeight:700,marginTop:5}}>
               {effectiveResourceCapacity(model,design,r)}
@@ -138,6 +150,8 @@ export default function ManualSVDPage() {
   const [selectedMetrics,setSelectedMetrics] = useState({
     throughput_per_hour:true,
     flow_balance:true,
+    mean_cycle_minutes:true,
+    median_cycle_minutes:true,
     p95_cycle_minutes:true,
     sla_attainment:true,
     annual_cost:true,
@@ -322,33 +336,51 @@ export default function ManualSVDPage() {
   }
 
   if (!model) {
-    return <main style={{maxWidth:1180,margin:"0 auto",padding:30}}>Loading model...</main>;
+    return <main style={{maxWidth:1240,margin:"0 auto",padding:30,color:"#0f172a"}}>Loading workspace…</main>;
   }
 
   return (
-    <main style={{maxWidth:1180,margin:"0 auto",padding:"30px 22px 60px"}}>
-      <div style={{display:"flex",justifyContent:"space-between",gap:16,flexWrap:"wrap"}}>
-        <div>
-          <div style={{fontSize:13,fontWeight:700,color:"#4f46e5",letterSpacing:".08em"}}>
-            HUMAN-IN-THE-LOOP DESIGN NAVIGATION
+    <main style={{maxWidth:1240,margin:"0 auto",padding:"24px 22px 72px",color:"#0f172a"}}>
+      <style jsx global>{`
+        html { background:#f4f7fb; }
+        body { margin:0; background:linear-gradient(180deg,#f8fafc 0,#f4f7fb 460px,#f8fafc 100%); color:#0f172a; font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+        button, input, select { font:inherit; }
+        button { transition:transform .12s ease, box-shadow .12s ease, border-color .12s ease; }
+        button:not(:disabled):hover { transform:translateY(-1px); box-shadow:0 7px 18px rgba(15,23,42,.10); }
+        input, select { border:1px solid #cbd5e1; border-radius:9px; padding:8px 10px; background:#fff; color:#0f172a; outline:none; }
+        input:focus, select:focus { border-color:#6366f1; box-shadow:0 0 0 3px rgba(99,102,241,.12); }
+        table th { color:#475569; font-size:11px; letter-spacing:.04em; text-transform:uppercase; font-weight:800; }
+        table td, table th { padding-top:9px !important; padding-bottom:9px !important; }
+      `}</style>
+
+      <header style={{background:"rgba(255,255,255,.94)",border:"1px solid #e2e8f0",borderRadius:18,boxShadow:"0 10px 34px rgba(15,23,42,.06)",overflow:"hidden"}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:16,padding:"14px 18px",borderBottom:"1px solid #eef2f7",flexWrap:"wrap"}}>
+          <div style={{display:"flex",alignItems:"center",gap:11}}>
+            <div style={{width:34,height:34,borderRadius:10,display:"grid",placeItems:"center",background:"linear-gradient(135deg,#0f172a,#4338ca)",color:"#fff",fontWeight:800,fontSize:14}}>PD</div>
+            <div><div style={{fontSize:14,fontWeight:800}}>Process Design Space</div><div style={{fontSize:11,color:"#64748b",marginTop:1}}>Digital twin & optimization workspace</div></div>
           </div>
-          <h1 style={{fontSize:36,margin:"8px 0"}}>Manual SVD Explorer</h1>
-          <p style={{maxWidth:880,color:"#4b5563",lineHeight:1.55}}>
-            Estimate a replicated stochastic Jacobian with common random numbers, inspect its
-            singular directions, move manually along a selected design mode, project the move
-            onto allowable continuous/quantized values, and recompute the SVD at the new point.
+          <nav style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+            <a href="/" style={{padding:"7px 10px",borderRadius:8,color:"#475569",fontSize:13,fontWeight:700,textDecoration:"none"}}>Workspace</a>
+            <a href="/manual-svd" style={{padding:"7px 10px",borderRadius:8,background:"#eef2ff",color:"#4338ca",fontSize:13,fontWeight:700,textDecoration:"none"}}>Manual SVD</a>
+            <a href="/auth/logout" style={{padding:"7px 10px",borderRadius:8,color:"#64748b",fontSize:13,fontWeight:700,textDecoration:"none"}}>Sign out</a>
+          </nav>
+        </div>
+        <div style={{padding:"26px 24px 24px",background:"linear-gradient(135deg,#ffffff 0%,#f8fafc 58%,#eef2ff 100%)"}}>
+          <div style={{display:"inline-flex",alignItems:"center",gap:7,padding:"5px 9px",borderRadius:999,background:"#eef2ff",color:"#4338ca",fontSize:11,fontWeight:800,letterSpacing:".055em",textTransform:"uppercase"}}>Human-guided optimization</div>
+          <h1 style={{fontSize:"clamp(30px,4vw,42px)",lineHeight:1.08,letterSpacing:"-.035em",margin:"12px 0 10px"}}>Manual SVD Explorer</h1>
+          <p style={{maxWidth:860,color:"#475569",lineHeight:1.65,margin:0,fontSize:15}}>
+            Navigate the stochastic design space one local mode at a time. Inspect sensitivity, choose a direction, simulate the projected design, and recompute the geometry at every iteration.
           </p>
         </div>
-        <a href="/" style={{color:"#4f46e5",fontWeight:700,textDecoration:"none"}}>← Automated optimizer</a>
-      </div>
+      </header>
 
-      <div style={{...card,marginTop:14,background:busy ? "#eef2ff" : "#fafafa"}}>
-        <b>{busy ? "Working" : "Status"}</b>
-        <div style={{fontSize:13,color:"#4b5563",marginTop:4}}>{status}</div>
+      <div style={{...card,marginTop:18,padding:"13px 16px",background:busy ? "#eef2ff" : "#f8fafc",display:"flex",alignItems:"center",gap:10}}>
+        <span style={{width:8,height:8,borderRadius:"50%",background:busy ? "#6366f1" : "#10b981",flex:"0 0 auto"}} />
+        <div><b style={{fontSize:12,color:busy ? "#4338ca" : "#334155"}}>{busy ? "Working" : "Ready"}</b><div style={{fontSize:12,color:"#64748b",marginTop:2}}>{status}</div></div>
       </div>
 
       <section style={{...card,marginTop:18}}>
-        <h2 style={{marginTop:0}}>1. Stochastic SVD settings</h2>
+        <div style={{fontSize:11,fontWeight:800,letterSpacing:".06em",textTransform:"uppercase",color:"#6366f1",marginBottom:6}}>Step 1 · Configure</div><h2 style={{margin:"0 0 14px",fontSize:21,letterSpacing:"-.015em"}}>Stochastic SVD settings</h2>
         <div style={{display:"flex",gap:14,flexWrap:"wrap",alignItems:"end"}}>
           <label style={{fontSize:13}}>Architecture<br/>
             <select value={architectureId} disabled={busy || !!history.length}
@@ -368,7 +400,7 @@ export default function ManualSVDPage() {
             <input type="number" min="0.01" max="2" step="0.05" value={stepFraction} disabled={busy}
               onChange={e => setStepFraction(e.target.value)} style={{width:100}}/>
           </label>
-          <button style={buttonStyle} disabled={busy} onClick={() => calculateSvd()}>
+          <button style={primaryButtonStyle} disabled={busy} onClick={() => calculateSvd()}>
             {analysis ? "Recalculate local SVD" : "Calculate local SVD"}
           </button>
           <button style={buttonStyle} disabled={busy || !history.length} onClick={undoStep}>Undo last step</button>
@@ -386,7 +418,7 @@ export default function ManualSVDPage() {
       </section>
 
       <section style={{...card,marginTop:18}}>
-        <h2 style={{marginTop:0}}>2. Current process design</h2>
+        <div style={{fontSize:11,fontWeight:800,letterSpacing:".06em",textTransform:"uppercase",color:"#6366f1",marginBottom:6}}>Step 2 · Inspect</div><h2 style={{margin:"0 0 14px",fontSize:21,letterSpacing:"-.015em"}}>Current process design</h2>
         <ProcessView model={{...model,variables:(model.variables || []).map(v => v.name === "architecture" ? {...v,value:architectureId} : v)}} design={design}/>
         <div style={{overflowX:"auto",marginTop:14}}>
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
@@ -405,10 +437,10 @@ export default function ManualSVDPage() {
 
       {analysis && <>
         <section style={{...card,marginTop:18}}>
-          <h2 style={{marginTop:0}}>3. Replicated performance at this design point</h2>
+          <div style={{fontSize:11,fontWeight:800,letterSpacing:".06em",textTransform:"uppercase",color:"#6366f1",marginBottom:6}}>Step 3 · Evaluate</div><h2 style={{margin:"0 0 14px",fontSize:21,letterSpacing:"-.015em"}}>Replicated performance at this design point</h2>
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:10}}>
             {analysis.metric_names.map(name => (
-              <div key={name} style={{...card,background:"#fafafa"}}>
+              <div key={name} style={{...card,padding:16,background:"#f8fafc",boxShadow:"none"}}>
                 <div style={{fontSize:11,color:"#6b7280"}}>{METRICS.find(x => x[0] === name)?.[1] || name}</div>
                 <div style={{fontSize:23,fontWeight:700,marginTop:5}}>{fmtMetric(name,analysis.baseline_mean[name])}</div>
                 <div style={{fontSize:11,color:"#6b7280",marginTop:3}}>replication SD {fmtMetric(name,analysis.baseline_std[name])}</div>
@@ -421,22 +453,23 @@ export default function ManualSVDPage() {
         </section>
 
         <section style={{...card,marginTop:18}}>
-          <h2 style={{marginTop:0}}>4. Local SVD design modes</h2>
+          <div style={{fontSize:11,fontWeight:800,letterSpacing:".06em",textTransform:"uppercase",color:"#6366f1",marginBottom:6}}>Step 4 · Navigate</div><h2 style={{margin:"0 0 8px",fontSize:21,letterSpacing:"-.015em"}}>Local SVD design modes</h2>
           <p style={{fontSize:13,color:"#4b5563",lineHeight:1.5}}>
             The displayed vectors are right singular vectors of the normalized stochastic sensitivity matrix.
             Eigenvalue refers to the corresponding eigenvalue of JᵀJ (= σ²). Choose + or − to move along that mode;
             the resulting design is projected to allowable quantized values before the process is re-simulated.
           </p>
 
+          <div style={{display:"grid",gap:10,marginTop:14}}>
           {analysis.modes.map(mode => (
-            <div key={mode.mode} style={{borderTop:"1px solid #e5e7eb",padding:"14px 0"}}>
+            <div key={mode.mode} style={{border:"1px solid #e2e8f0",borderRadius:14,padding:"14px 16px",background:"#fbfdff"}}>
               <div style={{display:"flex",justifyContent:"space-between",gap:10,flexWrap:"wrap"}}>
                 <div>
                   <b>Mode {mode.mode}</b> · σ {mode.singular_value.toFixed(1)} · λ(JᵀJ) {mode.eigenvalue_jtj.toFixed(1)} · stability <b>{stabilityLabel(mode.stability)} ({mode.stability.toFixed(2)})</b>
                 </div>
                 <div style={{display:"flex",gap:7}}>
                   <button style={buttonStyle} disabled={busy} onClick={() => takeStep(mode,-1)}>Move −</button>
-                  <button style={buttonStyle} disabled={busy} onClick={() => takeStep(mode,+1)}>Move +</button>
+                  <button style={primaryButtonStyle} disabled={busy} onClick={() => takeStep(mode,+1)}>Move +</button>
                 </div>
               </div>
               <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:6,marginTop:9}}>
@@ -448,10 +481,11 @@ export default function ManualSVDPage() {
               </div>
             </div>
           ))}
+          </div>
         </section>
 
         <section style={{...card,marginTop:18}}>
-          <h2 style={{marginTop:0}}>5. Iteration trail</h2>
+          <div style={{fontSize:11,fontWeight:800,letterSpacing:".06em",textTransform:"uppercase",color:"#6366f1",marginBottom:6}}>History</div><h2 style={{margin:"0 0 10px",fontSize:21,letterSpacing:"-.015em"}}>Iteration trail</h2>
           {history.length === 0
             ? <div style={{fontSize:13,color:"#6b7280"}}>No manual moves yet. The current design is iteration 0.</div>
             : history.map((h,i) => (
@@ -462,12 +496,12 @@ export default function ManualSVDPage() {
         </section>
 
         <section style={{...card,marginTop:18,border:"1px solid #86efac",background:"#f0fdf4"}}>
-          <h2 style={{marginTop:0}}>6. Commit this design</h2>
+          <div style={{fontSize:11,fontWeight:800,letterSpacing:".06em",textTransform:"uppercase",color:"#047857",marginBottom:6}}>Finish</div><h2 style={{margin:"0 0 8px",fontSize:21,letterSpacing:"-.015em"}}>Commit this design</h2>
           <p style={{fontSize:13,color:"#166534",lineHeight:1.5}}>
             Commit stores this manual design as the TO-BE design and returns to the automated page.
             The main page will then use it for AS-IS vs TO-BE comparison. You can return here later and continue iterating.
           </p>
-          <button style={{...buttonStyle,fontWeight:700}} disabled={busy} onClick={commitDesign}>Commit design to main workflow</button>
+          <button style={{...primaryButtonStyle,background:"#047857",borderColor:"#047857",boxShadow:"0 6px 16px rgba(4,120,87,.18)"}} disabled={busy} onClick={commitDesign}>Commit design to main workflow</button>
         </section>
       </>}
     </main>
