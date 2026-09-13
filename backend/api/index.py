@@ -51,7 +51,7 @@ async def require_app_gate(request: Request, call_next):
     if request.url.path == "/api/health":
         return await call_next(request)
 
-    password = os.getenv("APP_PASSWORD", "")
+    password = os.getenv("APP_PASSWORD", "").strip()
     if not password:
         return JSONResponse(
             status_code=503,

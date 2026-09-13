@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { GATE_COOKIE, gateToken } from "./lib/gate";
 
+function configuredPassword() {
+  return String(process.env.APP_PASSWORD || "").trim();
+}
+
 export async function middleware(request) {
   const { pathname, search } = request.nextUrl;
 
@@ -8,11 +12,12 @@ export async function middleware(request) {
     pathname === "/login"
     || pathname === "/auth/login"
     || pathname === "/auth/logout"
+    || pathname === "/auth/status"
   ) {
     return NextResponse.next();
   }
 
-  const password = process.env.APP_PASSWORD;
+  const password = configuredPassword();
 
   if (!password) {
     const loginUrl = new URL("/login", request.url);

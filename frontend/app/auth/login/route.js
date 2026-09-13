@@ -9,11 +9,15 @@ function safeNext(value) {
   ) ? value : "/";
 }
 
+function configuredPassword() {
+  return String(process.env.APP_PASSWORD || "").trim();
+}
+
 export async function POST(request) {
   const form = await request.formData();
-  const entered = String(form.get("password") || "");
+  const entered = String(form.get("password") || "").trim();
   const next = safeNext(String(form.get("next") || "/"));
-  const password = process.env.APP_PASSWORD;
+  const password = configuredPassword();
 
   if (!password) {
     const url = new URL("/login", request.url);
