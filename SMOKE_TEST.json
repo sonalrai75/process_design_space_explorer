@@ -1,0 +1,57 @@
+{
+  "baseline_metrics": {
+    "throughput_per_hour": 4.553527171321036,
+    "mean_cycle_minutes": 352.3804452324956,
+    "p95_cycle_minutes": 682.5285745534691,
+    "sla_attainment": 0.5666666666666667,
+    "avg_wip": 26.742898866806218,
+    "annual_cost": 2674272.4813076453
+  },
+  "mined": {
+    "cases": 120,
+    "events": 641,
+    "transitions": 7
+  },
+  "optimization": [
+    {
+      "architecture": "baseline",
+      "best_metrics": {
+        "throughput_per_hour": 3.8838984509203436,
+        "mean_cycle_minutes": 497.6213617079227,
+        "p95_cycle_minutes": 754.4137941492567,
+        "sla_attainment": 0.3,
+        "avg_wip": 32.21184726470455,
+        "annual_cost": 2678251.097543673
+      },
+      "best_design": {
+        "analyst_capacity": 7.0,
+        "senior_capacity": 2.0,
+        "qa_capacity": 2.0,
+        "automation_level": 0.1644429094577584,
+        "qa_rework_rate": 0.08
+      },
+      "null_dim": 2,
+      "rank": 3
+    },
+    {
+      "architecture": "straight_through",
+      "best_metrics": {
+        "throughput_per_hour": 3.6636226838132364,
+        "mean_cycle_minutes": 503.2158595926102,
+        "p95_cycle_minutes": 804.481853337892,
+        "sla_attainment": 0.3111111111111111,
+        "avg_wip": 30.726550634301056,
+        "annual_cost": 2674272.4813076453
+      },
+      "best_design": {
+        "analyst_capacity": 7.0,
+        "senior_capacity": 2.0,
+        "qa_capacity": 2.0,
+        "automation_level": 0.15,
+        "qa_rework_rate": 0.08
+      },
+      "null_dim": 3,
+      "rank": 2
+    }
+  ]
+}
