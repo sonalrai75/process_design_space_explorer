@@ -8,6 +8,8 @@ from .simulation import simulate
 
 DEFAULT_METRICS = [
     "throughput_per_hour",
+    "mean_cycle_minutes",
+    "median_cycle_minutes",
     "p95_cycle_minutes",
     "sla_attainment",
     "annual_cost",

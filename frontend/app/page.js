@@ -2974,6 +2974,24 @@ export default function Home() {
             />
 
             <Metric
+              label="Mean cycle (min)"
+              value={
+                sim.metrics
+                .mean_cycle_minutes
+                .toFixed(1)
+              }
+            />
+
+            <Metric
+              label="Median / P50 cycle (min)"
+              value={
+                sim.metrics
+                .median_cycle_minutes
+                .toFixed(1)
+              }
+            />
+
+            <Metric
               label="P95 cycle (min)"
               value={
                 sim.metrics
@@ -3249,6 +3267,16 @@ export default function Home() {
                           fmtFlow(b.metrics
                             .flow_balance)
                         } ·
+                        {" "}Mean cycle {
+                          b.metrics
+                          .mean_cycle_minutes
+                          .toFixed(1)
+                        } min ·
+                        {" "}Median {
+                          b.metrics
+                          .median_cycle_minutes
+                          .toFixed(1)
+                        } min ·
                         {" "}P95 {
                           b.metrics
                           .p95_cycle_minutes

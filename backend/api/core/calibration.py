@@ -406,6 +406,7 @@ def calibrate_event_log(
             "cases": int(count),
             "share": float(count / max(case_count, 1)),
             "mean_cycle_minutes": float(np.mean(cvals)) if cvals else 0.0,
+            "median_cycle_minutes": float(np.median(cvals)) if cvals else 0.0,
             "p95_cycle_minutes": float(np.percentile(cvals, 95)) if cvals else 0.0,
             "has_rework": bool(repeated),
         })
@@ -434,6 +435,7 @@ def calibrate_event_log(
             "rework_case_rate": float(rework_cases / max(case_count, 1)),
             "most_common_variant_share": float(top_variant_count / max(case_count, 1)),
             "mean_cycle_minutes_observed": float(cycles.mean()) if len(cycles) else 0.0,
+            "median_cycle_minutes_observed": float(np.median(cycles)) if len(cycles) else 0.0,
             "p95_cycle_minutes_observed": float(np.percentile(cycles, 95)) if len(cycles) else 0.0,
             "sla_attainment_observed": float(np.mean(cycles <= sla_minutes)) if len(cycles) else 0.0,
             "start_activity": start_activity_name,

@@ -23,6 +23,8 @@ const buttonStyle = {
 const METRICS = [
   ["throughput_per_hour","Throughput / hr"],
   ["flow_balance","Flow balance"],
+  ["mean_cycle_minutes","Mean cycle (min)"],
+  ["median_cycle_minutes","Median / P50 cycle (min)"],
   ["p95_cycle_minutes","P95 cycle (min)"],
   ["sla_attainment","SLA"],
   ["annual_cost","Annual cost"],
@@ -430,7 +432,7 @@ export default function ManualSVDPage() {
             <div key={mode.mode} style={{borderTop:"1px solid #e5e7eb",padding:"14px 0"}}>
               <div style={{display:"flex",justifyContent:"space-between",gap:10,flexWrap:"wrap"}}>
                 <div>
-                  <b>Mode {mode.mode}</b> · σ {mode.singular_value.toFixed(4)} · λ(JᵀJ) {mode.eigenvalue_jtj.toFixed(4)} · stability <b>{stabilityLabel(mode.stability)} ({mode.stability.toFixed(2)})</b>
+                  <b>Mode {mode.mode}</b> · σ {mode.singular_value.toFixed(1)} · λ(JᵀJ) {mode.eigenvalue_jtj.toFixed(1)} · stability <b>{stabilityLabel(mode.stability)} ({mode.stability.toFixed(2)})</b>
                 </div>
                 <div style={{display:"flex",gap:7}}>
                   <button style={buttonStyle} disabled={busy} onClick={() => takeStep(mode,-1)}>Move −</button>

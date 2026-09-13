@@ -282,6 +282,7 @@ def simulate(
             "throughput_per_hour": throughput_per_hour,
             "realized_arrival_rate_per_hour": realized_arrival_rate,
             "mean_cycle_minutes": float(np.mean(cohort_cycles)),
+            "median_cycle_minutes": float(np.median(cohort_cycles)),
             "p95_cycle_minutes": float(np.percentile(cohort_cycles, 95)),
             "sla_attainment": sla,
             "avg_wip": avg_wip,
