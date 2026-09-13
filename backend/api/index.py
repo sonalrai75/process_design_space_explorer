@@ -5,6 +5,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import pandas as pd
+import numpy as np
 
 from .core.demo import DEMO_MODEL
 from .core.model import ProcessModel
@@ -19,7 +20,7 @@ from .core.optimization import (
 
 app = FastAPI(
     title="Process Design Space Platform API",
-    version="0.12.0",
+    version="0.12.1",
 )
 
 app.add_middleware(
@@ -94,13 +95,14 @@ class CompareRequest(BaseModel):
     future_design: dict[str, float] = {}
     cases: int = 1200
     seed: int = 2
+    replications: int = 20
 
 
 @app.get("/api/health")
 def health():
     return {
         "ok": True,
-        "version": "0.12.0",
+        "version": "0.12.1",
     }
 
 
@@ -340,56 +342,224 @@ def compare_endpoint(req: CompareRequest):
             or baseline_arch
         )
 
-        actual = simulate(
-            req.model,
-            baseline_arch,
-            {},
-            cases=req.cases,
-            seed=req.seed,
-            emit_log=True,
+        replications = max(
+            1,
+            int(req.replications),
         )
-        actual_capacity = calculate_structural_capacity(
-            req.model,
-            baseline_arch,
-            {},
-        )
-        actual["metrics"]["max_resource_utilization"] = actual_capacity["max_resource_utilization"]
 
-        future = simulate(
+        baseline_capacity = calculate_structural_capacity(
             req.model,
-            future_arch,
-            req.future_design,
-            cases=req.cases,
-            seed=req.seed,
-            emit_log=True,
+            baseline_arch,
+            {},
         )
         future_capacity = calculate_structural_capacity(
             req.model,
             future_arch,
             req.future_design,
         )
-        future["metrics"]["max_resource_utilization"] = future_capacity["max_resource_utilization"]
 
-        for result in (actual, future):
-            realized = float(result["metrics"].get("realized_arrival_rate_per_hour", req.model.arrival_rate_per_hour))
-            raw = float(result["metrics"]["throughput_per_hour"] / max(realized, 1e-9))
-            result["metrics"]["raw_flow_balance"] = raw
-            result["metrics"]["flow_balance"] = min(raw, 1.0)
+        metric_names = [
+            "annual_cost",
+            "throughput_per_hour",
+            "realized_arrival_rate_per_hour",
+            "flow_balance",
+            "p95_cycle_minutes",
+            "sla_attainment",
+            "backlog_growth_per_hour",
+        ]
 
-        a = pd.DataFrame(actual["event_log"])
-        b = pd.DataFrame(future["event_log"])
+        baseline_samples = {
+            k: []
+            for k in metric_names
+        }
+        future_samples = {
+            k: []
+            for k in metric_names
+        }
+
+        first_actual = None
+        first_future = None
+
+        for i in range(replications):
+            # Common random numbers: the AS-IS and TO-BE simulations use the
+            # same seed in each paired replication so differences are driven
+            # primarily by the design, not different random demand/service draws.
+            seed = int(req.seed) + i
+
+            actual = simulate(
+                req.model,
+                baseline_arch,
+                {},
+                cases=req.cases,
+                seed=seed,
+                emit_log=(i == 0),
+            )
+            future = simulate(
+                req.model,
+                future_arch,
+                req.future_design,
+                cases=req.cases,
+                seed=seed,
+                emit_log=(i == 0),
+            )
+
+            actual["metrics"]["max_resource_utilization"] = (
+                baseline_capacity["max_resource_utilization"]
+            )
+            future["metrics"]["max_resource_utilization"] = (
+                future_capacity["max_resource_utilization"]
+            )
+
+            for result in (actual, future):
+                realized = float(
+                    result["metrics"].get(
+                        "realized_arrival_rate_per_hour",
+                        result["metrics"].get(
+                            "realized_arrival_rate",
+                            req.model.arrival_rate_per_hour,
+                        ),
+                    )
+                )
+                raw = float(
+                    result["metrics"]["throughput_per_hour"]
+                    / max(realized, 1e-9)
+                )
+                result["metrics"][
+                    "realized_arrival_rate_per_hour"
+                ] = realized
+                result["metrics"]["raw_flow_balance"] = raw
+                result["metrics"]["flow_balance"] = min(
+                    raw,
+                    1.0,
+                )
+
+            if i == 0:
+                first_actual = actual
+                first_future = future
+
+            for name in metric_names:
+                baseline_samples[name].append(
+                    float(actual["metrics"][name])
+                )
+                future_samples[name].append(
+                    float(future["metrics"][name])
+                )
+
+        def summarize(samples: dict, capacity: dict) -> dict:
+            summary = {}
+
+            for name, values in samples.items():
+                arr = np.asarray(
+                    values,
+                    dtype=float,
+                )
+                summary[name] = float(
+                    arr.mean()
+                )
+                summary[
+                    f"{name}_std"
+                ] = float(
+                    arr.std(ddof=1)
+                    if len(arr) > 1
+                    else 0.0
+                )
+
+            summary[
+                "max_resource_utilization"
+            ] = float(
+                capacity[
+                    "max_resource_utilization"
+                ]
+            )
+
+            return summary
+
+        baseline_metrics = summarize(
+            baseline_samples,
+            baseline_capacity,
+        )
+        future_metrics = summarize(
+            future_samples,
+            future_capacity,
+        )
+
+        paired_deltas = {}
+
+        for name in metric_names:
+            a = np.asarray(
+                baseline_samples[name],
+                dtype=float,
+            )
+            b = np.asarray(
+                future_samples[name],
+                dtype=float,
+            )
+            d = b - a
+
+            paired_deltas[name] = {
+                "mean": float(
+                    d.mean()
+                ),
+                "std": float(
+                    d.std(ddof=1)
+                    if len(d) > 1
+                    else 0.0
+                ),
+            }
+
+        mined = None
+
+        if (
+            first_actual
+            and first_future
+            and first_actual.get(
+                "event_log"
+            )
+            and first_future.get(
+                "event_log"
+            )
+        ):
+            a = pd.DataFrame(
+                first_actual[
+                    "event_log"
+                ]
+            )
+            b = pd.DataFrame(
+                first_future[
+                    "event_log"
+                ]
+            )
+            mined = compare_mined_logs(
+                a,
+                b,
+            )
 
         return {
             "baseline_architecture": baseline_arch,
             "future_architecture": future_arch,
             "future_design": req.future_design,
-            "baseline_metrics": actual["metrics"],
-            "future_metrics": future["metrics"],
-            "baseline_capacity": actual_capacity,
+            "baseline_metrics": baseline_metrics,
+            "future_metrics": future_metrics,
+            "baseline_capacity": baseline_capacity,
             "future_capacity": future_capacity,
-            "mined_comparison": compare_mined_logs(a, b),
+            "comparison_method": {
+                "replications": replications,
+                "cases_per_replication": int(
+                    req.cases
+                ),
+                "common_random_numbers": True,
+                "seed_start": int(
+                    req.seed
+                ),
+            },
+            "paired_deltas": paired_deltas,
+            "mined_comparison": mined,
         }
 
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(
+            status_code=400,
+            detail=str(e),
+        )
+
 

@@ -56,6 +56,17 @@ function fmtFlow(v) {
   );
 }
 
+function fmtPctPoints(delta) {
+  const pp =
+    100 * Number(delta);
+
+  return (
+    (pp >= 0 ? "+" : "")
+    + pp.toFixed(1)
+    + " pp"
+  );
+}
+
 function money(v) {
   return (
     "$"
@@ -959,7 +970,8 @@ export default function Home() {
               future_design:
                 selected.best.design,
               cases:1200,
-              seed:2
+              seed:2,
+              replications:20
             })
           },
           "Comparing AS-IS vs TO-BE"
@@ -2614,6 +2626,64 @@ export default function Home() {
             Final validation uses 40 independent replications.
           </p>
 
+          {opt.results?.length > 0 &&
+            (() => {
+              const rec =
+                opt.results[0];
+
+              const best =
+                rec.best;
+
+              const rob =
+                rec.robustness;
+
+              return (
+                <div style={{
+                  ...card,
+                  background:"#f0fdf4",
+                  border:"1px solid #bbf7d0",
+                  marginBottom:16
+                }}>
+                  <div style={{
+                    fontSize:12,
+                    fontWeight:800,
+                    color:"#166534",
+                    textTransform:"uppercase"
+                  }}>
+                    Recommended architecture
+                  </div>
+
+                  <div style={{
+                    fontSize:22,
+                    fontWeight:800,
+                    marginTop:4
+                  }}>
+                    {rec.architecture}
+                  </div>
+
+                  <div style={{
+                    fontSize:13,
+                    color:"#475569",
+                    marginTop:6,
+                    lineHeight:1.5
+                  }}>
+                    Selected because it {
+                      rec.robust_target_met
+                      ? "meets the robustness target and is the lowest-cost target-meeting architecture"
+                      : "is the strongest available architecture even though the robustness target is not yet met"
+                    }.
+                    {best?.metrics?.annual_cost !== undefined
+                      ? ` Annual cost ${money(best.metrics.annual_cost)}.`
+                      : ""}
+                    {rob?.probability !== undefined
+                      ? ` Final replicated feasibility ${fmtPct(rob.probability)}.`
+                      : ""}
+                  </div>
+                </div>
+              );
+            })()
+          }
+
           {opt.results.map(
             (r,idx) => {
               const b = r.best;
@@ -3001,6 +3071,43 @@ export default function Home() {
                           )
                         }
                       </div>
+
+                      {rob
+                        .probability_backlog_growth_above_0_05
+                        >= 0.25
+                        &&
+                        <div style={{
+                          marginTop:8,
+                          padding:"8px 10px",
+                          borderRadius:8,
+                          background:
+                            rob
+                            .probability_backlog_growth_above_0_05
+                            >= 0.50
+                            ? "#fef2f2"
+                            : "#fffbeb",
+                          color:
+                            rob
+                            .probability_backlog_growth_above_0_05
+                            >= 0.50
+                            ? "#991b1b"
+                            : "#92400e",
+                          fontSize:12,
+                          fontWeight:700
+                        }}>
+                          {rob
+                            .probability_backlog_growth_above_0_05
+                            >= 0.50
+                            ? "High"
+                            : "Elevated"
+                          } backlog-drift risk: {
+                            fmtPct(
+                              rob
+                              .probability_backlog_growth_above_0_05
+                            )
+                          } of validation runs exceeded +0.05 backlog/hr.
+                        </div>
+                      }
                     </div>
                   }
                 </div>
@@ -3027,6 +3134,15 @@ export default function Home() {
             marginBottom:12
           }}>
             {cmp.baseline_architecture} → {cmp.future_architecture}
+            {cmp.comparison_method &&
+              <>
+                {" "}· {
+                  cmp.comparison_method.replications
+                } paired replications · {
+                  cmp.comparison_method.cases_per_replication
+                } cases each · common random numbers
+              </>
+            }
           </div>
 
           <div style={{
@@ -3052,51 +3168,58 @@ export default function Home() {
                     cmp.baseline_metrics.annual_cost,
                     cmp.future_metrics.annual_cost,
                     money,
-                    true
+                    true,
+                    "relative"
                   ],
                   [
                     "Throughput / hr",
                     cmp.baseline_metrics.throughput_per_hour,
                     cmp.future_metrics.throughput_per_hour,
                     v => Number(v).toFixed(2),
-                    false
+                    false,
+                    "relative"
                   ],
                   [
                     "Flow balance",
                     cmp.baseline_metrics.flow_balance,
                     cmp.future_metrics.flow_balance,
                     fmtFlow,
-                    false
+                    false,
+                    "points"
                   ],
                   [
                     "P95 cycle (min)",
                     cmp.baseline_metrics.p95_cycle_minutes,
                     cmp.future_metrics.p95_cycle_minutes,
                     v => Number(v).toFixed(1),
-                    true
+                    true,
+                    "relative"
                   ],
                   [
                     "SLA attainment",
                     cmp.baseline_metrics.sla_attainment,
                     cmp.future_metrics.sla_attainment,
                     fmtPct,
-                    false
+                    false,
+                    "points"
                   ],
                   [
                     "Max utilization",
                     cmp.baseline_metrics.max_resource_utilization,
                     cmp.future_metrics.max_resource_utilization,
                     fmtPct,
-                    true
+                    true,
+                    "points"
                   ],
                   [
                     "Backlog growth / hr",
                     cmp.baseline_metrics.backlog_growth_per_hour,
                     cmp.future_metrics.backlog_growth_per_hour,
                     v => Number(v).toFixed(2),
-                    true
+                    true,
+                    "relative"
                   ]
-                ].map(([label,a,b,fmt,lowerBetter]) => {
+                ].map(([label,a,b,fmt,lowerBetter,changeType]) => {
                   const delta = Number(b) - Number(a);
                   const pct = Math.abs(Number(a)) > 1e-9
                     ? 100 * delta / Math.abs(Number(a))
@@ -3117,9 +3240,11 @@ export default function Home() {
                             ? "#166534"
                             : "#991b1b"
                       }}>
-                        {pct === null
-                          ? `${delta >= 0 ? "+" : ""}${delta.toFixed(2)}`
-                          : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`}
+                        {changeType === "points"
+                          ? fmtPctPoints(delta)
+                          : pct === null
+                            ? `${delta >= 0 ? "+" : ""}${delta.toFixed(2)}`
+                            : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`}
                       </td>
                     </tr>
                   );
