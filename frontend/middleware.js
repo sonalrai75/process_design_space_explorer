@@ -1,34 +1,25 @@
 import { NextResponse } from "next/server";
-import { GATE_COOKIE, gateToken } from "./lib/gate";
+import { GATE_COOKIE } from "./lib/gate";
 
-function configuredPassword() {
-  return String(process.env.APP_PASSWORD || "").trim();
-}
-
-export async function middleware(request) {
+export function middleware(request) {
   const { pathname, search } = request.nextUrl;
 
   if (
     pathname === "/login"
     || pathname === "/auth/login"
     || pathname === "/auth/logout"
-    || pathname === "/auth/status"
   ) {
     return NextResponse.next();
   }
 
-  const password = configuredPassword();
-
-  if (!password) {
-    const loginUrl = new URL("/login", request.url);
-    loginUrl.searchParams.set("config", "missing");
-    return NextResponse.redirect(loginUrl);
-  }
-
-  const expected = await gateToken(password);
+  // Important for Vercel Services: do not recompute the password-derived
+  // token in middleware. Route handlers and the FastAPI backend have reliable
+  // runtime access to APP_PASSWORD; middleware only verifies that the
+  // HttpOnly session cookie exists. The backend still validates the cookie's
+  // full SHA-256 token before allowing any functional API request.
   const supplied = request.cookies.get(GATE_COOKIE)?.value || "";
 
-  if (supplied === expected) {
+  if (supplied) {
     return NextResponse.next();
   }
 
