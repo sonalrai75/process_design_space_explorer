@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from io import StringIO
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+import hashlib
+import hmac
+import os
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import pandas as pd
@@ -34,6 +38,38 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _gate_token(password: str) -> str:
+    return hashlib.sha256(
+        f"process-design:{password}".encode("utf-8")
+    ).hexdigest()
+
+
+@app.middleware("http")
+async def require_app_gate(request: Request, call_next):
+    if request.url.path == "/api/health":
+        return await call_next(request)
+
+    password = os.getenv("APP_PASSWORD", "")
+    if not password:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "APP_PASSWORD is not configured."
+            },
+        )
+
+    supplied = request.cookies.get("pds_gate", "")
+    expected = _gate_token(password)
+
+    if not hmac.compare_digest(supplied, expected):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Authentication required."},
+        )
+
+    return await call_next(request)
 
 
 class SimulationRequest(BaseModel):
