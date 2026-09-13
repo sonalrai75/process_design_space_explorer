@@ -484,9 +484,18 @@ def calibrate_event_log(
         [],
     )
 
-    old_transitions = template.get(
-        "transitions",
+    old_architectures = template.get(
+        "architectures",
         [],
+    )
+
+    old_transitions = (
+        old_architectures[0].get(
+            "transitions",
+            [],
+        )
+        if old_architectures
+        else []
     )
 
     if not old_activities:
@@ -699,10 +708,6 @@ def calibrate_event_log(
     ] = new_activities
 
     template[
-        "transitions"
-    ] = new_transitions
-
-    template[
         "start_activity"
     ] = id_map[
         start_activity_name
@@ -911,6 +916,12 @@ def calibrate_event_log(
                 if a.get("id")
             ]
 
+        # Connectivity belongs to the architecture, not the ProcessModel
+        # root. This is the graph consumed by both the simulator and UI.
+        arch[
+            "transitions"
+        ] = new_transitions
+
         for k in list(
             arch.keys()
         ):
@@ -922,6 +933,7 @@ def calibrate_event_log(
                     "id",
                     "name",
                     "enabled_activities",
+                    "transitions",
                 }
                 and (
                     "override" in kl

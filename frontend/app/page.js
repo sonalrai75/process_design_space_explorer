@@ -73,6 +73,537 @@ function formatElapsed(seconds) {
     : `${s}s`;
 }
 
+
+
+function activeArchitecture(model) {
+  const architectures =
+    Array.isArray(model?.architectures)
+    ? model.architectures
+    : [];
+
+  if (!architectures.length) {
+    return null;
+  }
+
+  const architectureVariable =
+    Array.isArray(model?.variables)
+    ? model.variables.find(
+        v => v.name === "architecture"
+      )
+    : null;
+
+  const selectedId =
+    architectureVariable?.value;
+
+  return (
+    architectures.find(
+      a => a.id === selectedId
+    )
+    || architectures[0]
+  );
+}
+
+function activeTransitions(model) {
+  const arch =
+    activeArchitecture(model);
+
+  return Array.isArray(
+    arch?.transitions
+  )
+    ? arch.transitions
+    : [];
+}
+
+function ProcessGraph({model}) {
+  const activities =
+    Array.isArray(model?.activities)
+    ? model.activities
+    : [];
+
+  const transitions =
+    activeTransitions(model);
+
+  if (!activities.length) {
+    return (
+      <div style={{
+        color:"#6b7280",
+        fontSize:13
+      }}>
+        No activities to display.
+      </div>
+    );
+  }
+
+  const byId =
+    Object.fromEntries(
+      activities.map(
+        a => [a.id,a]
+      )
+    );
+
+  const outgoing = {};
+
+  transitions.forEach(t => {
+    if (!outgoing[t.source]) {
+      outgoing[t.source] = [];
+    }
+
+    outgoing[t.source].push(
+      t.target
+    );
+  });
+
+  // Breadth-first levels give a stable left-to-right process layout.
+  // Cycles/rework edges are retained as edges but do not alter node level.
+  const level = {};
+  const start =
+    model?.start_activity
+    && byId[model.start_activity]
+    ? model.start_activity
+    : activities[0].id;
+
+  level[start] = 0;
+
+  const queue = [start];
+
+  while (queue.length) {
+    const current =
+      queue.shift();
+
+    const nexts =
+      outgoing[current] || [];
+
+    nexts.forEach(next => {
+      if (
+        byId[next]
+        && level[next] === undefined
+      ) {
+        level[next] =
+          level[current] + 1;
+
+        queue.push(next);
+      }
+    });
+  }
+
+  // Put disconnected activities to the right rather than dropping them.
+  let maxLevel =
+    Math.max(
+      0,
+      ...Object.values(level)
+    );
+
+  activities.forEach(a => {
+    if (level[a.id] === undefined) {
+      maxLevel += 1;
+      level[a.id] = maxLevel;
+    }
+  });
+
+  const groups = {};
+
+  activities.forEach(a => {
+    const l = level[a.id];
+
+    if (!groups[l]) {
+      groups[l] = [];
+    }
+
+    groups[l].push(a);
+  });
+
+  const levels =
+    Object.keys(groups)
+    .map(Number)
+    .sort((a,b) => a-b);
+
+  const nodeW = 160;
+  const nodeH = 68;
+  const xGap = 90;
+  const yGap = 44;
+  const marginX = 35;
+  const marginY = 35;
+
+  const maxRows =
+    Math.max(
+      1,
+      ...levels.map(
+        l => groups[l].length
+      )
+    );
+
+  const width =
+    Math.max(
+      720,
+      marginX * 2
+      + levels.length * nodeW
+      + Math.max(
+          0,
+          levels.length - 1
+        ) * xGap
+    );
+
+  const height =
+    Math.max(
+      220,
+      marginY * 2
+      + maxRows * nodeH
+      + Math.max(
+          0,
+          maxRows - 1
+        ) * yGap
+    );
+
+  const pos = {};
+
+  levels.forEach((l,li) => {
+    const group =
+      groups[l];
+
+    const groupHeight =
+      group.length * nodeH
+      + Math.max(
+          0,
+          group.length - 1
+        ) * yGap;
+
+    const y0 =
+      (height - groupHeight) / 2;
+
+    group.forEach((a,ri) => {
+      pos[a.id] = {
+        x:
+          marginX
+          + li * (
+              nodeW + xGap
+            ),
+        y:
+          y0
+          + ri * (
+              nodeH + yGap
+            )
+      };
+    });
+  });
+
+  function edgePath(
+    source,
+    target,
+    index
+  ) {
+    const s = pos[source];
+    const t = pos[target];
+
+    if (!s || !t) {
+      return "";
+    }
+
+    const sx =
+      s.x + nodeW;
+
+    const sy =
+      s.y + nodeH / 2;
+
+    const tx =
+      t.x;
+
+    const ty =
+      t.y + nodeH / 2;
+
+    // Forward branch / merge.
+    if (tx > sx + 10) {
+      const bend =
+        Math.max(
+          35,
+          (tx - sx) * 0.48
+        );
+
+      return (
+        `M ${sx} ${sy} `
+        + `C ${sx+bend} ${sy}, `
+        + `${tx-bend} ${ty}, `
+        + `${tx} ${ty}`
+      );
+    }
+
+    // Same-level or backward edges are rework / loop-like.
+    const loopOffset =
+      38 + (index % 4) * 13;
+
+    const top =
+      Math.max(
+        10,
+        Math.min(
+          sy,
+          ty
+        ) - loopOffset
+      );
+
+    return (
+      `M ${sx} ${sy} `
+      + `C ${sx+loopOffset} ${top}, `
+      + `${tx-loopOffset} ${top}, `
+      + `${tx} ${ty}`
+    );
+  }
+
+  return (
+    <div style={{
+      overflowX:"auto",
+      border:"1px solid #e5e7eb",
+      borderRadius:12,
+      background:"#fafafa"
+    }}>
+      <svg
+        width={width}
+        height={height}
+        viewBox={`0 0 ${width} ${height}`}
+        role="img"
+        aria-label="Process workflow graph"
+      >
+        <defs>
+          <marker
+            id="process-arrow"
+            viewBox="0 0 10 10"
+            refX="9"
+            refY="5"
+            markerWidth="7"
+            markerHeight="7"
+            orient="auto-start-reverse"
+          >
+            <path
+              d="M 0 0 L 10 5 L 0 10 z"
+              fill="#64748b"
+            />
+          </marker>
+        </defs>
+
+        {transitions.map(
+          (t,i) => {
+            const s = pos[t.source];
+            const target =
+              pos[t.target];
+
+            if (!s || !target) {
+              return null;
+            }
+
+            const backward =
+              target.x <= s.x;
+
+            const mx =
+              backward
+              ? (
+                  s.x
+                  + target.x
+                  + nodeW
+                ) / 2
+              : (
+                  s.x
+                  + nodeW
+                  + target.x
+                ) / 2;
+
+            const my =
+              backward
+              ? Math.max(
+                  16,
+                  Math.min(
+                    s.y,
+                    target.y
+                  ) - 24
+                )
+              : (
+                  s.y
+                  + target.y
+                  + nodeH
+                ) / 2;
+
+            return (
+              <g key={
+                `${t.source}-${t.target}-${i}`
+              }>
+                <path
+                  d={edgePath(
+                    t.source,
+                    t.target,
+                    i
+                  )}
+                  fill="none"
+                  stroke={
+                    backward
+                    ? "#b45309"
+                    : "#64748b"
+                  }
+                  strokeWidth="2"
+                  strokeDasharray={
+                    backward
+                    ? "6 4"
+                    : undefined
+                  }
+                  markerEnd="url(#process-arrow)"
+                />
+
+                {t.probability
+                  !== undefined
+                  &&
+                  <g>
+                    <rect
+                      x={mx-24}
+                      y={my-10}
+                      width="48"
+                      height="19"
+                      rx="8"
+                      fill="#fff"
+                      stroke="#e5e7eb"
+                    />
+
+                    <text
+                      x={mx}
+                      y={my+4}
+                      textAnchor="middle"
+                      fontSize="10"
+                      fill="#475569"
+                    >
+                      {
+                        (
+                          100
+                          * Number(
+                              t.probability
+                              || 0
+                            )
+                        ).toFixed(0)
+                      }%
+                    </text>
+                  </g>
+                }
+              </g>
+            );
+          }
+        )}
+
+        {activities.map(a => {
+          const p = pos[a.id];
+
+          if (!p) return null;
+
+          const isStart =
+            a.id
+            === model.start_activity;
+
+          const isEnd =
+            a.id
+            === model.end_activity;
+
+          return (
+            <g
+              key={a.id}
+              transform={
+                `translate(${p.x},${p.y})`
+              }
+            >
+              <rect
+                width={nodeW}
+                height={nodeH}
+                rx="12"
+                fill={
+                  isStart
+                  ? "#eef2ff"
+                  : isEnd
+                    ? "#ecfdf5"
+                    : "#ffffff"
+                }
+                stroke={
+                  isStart
+                  ? "#6366f1"
+                  : isEnd
+                    ? "#10b981"
+                    : "#cbd5e1"
+                }
+                strokeWidth={
+                  isStart || isEnd
+                  ? "2"
+                  : "1.5"
+                }
+              />
+
+              <text
+                x={nodeW/2}
+                y="25"
+                textAnchor="middle"
+                fontSize="13"
+                fontWeight="700"
+                fill="#111827"
+              >
+                {
+                  String(
+                    a.name || a.id
+                  ).length > 21
+                  ? String(
+                      a.name || a.id
+                    ).slice(0,20) + "…"
+                  : a.name || a.id
+                }
+              </text>
+
+              <text
+                x={nodeW/2}
+                y="45"
+                textAnchor="middle"
+                fontSize="10.5"
+                fill="#64748b"
+              >
+                {
+                  Number(
+                    a.service_time
+                    ?.mean_minutes
+                    || 0
+                  ).toFixed(1)
+                } min · {
+                  a.resource_pool
+                  || "no pool"
+                }
+              </text>
+
+              {(isStart || isEnd)
+                &&
+                <text
+                  x={nodeW/2}
+                  y="60"
+                  textAnchor="middle"
+                  fontSize="9"
+                  fontWeight="700"
+                  fill={
+                    isStart
+                    ? "#4f46e5"
+                    : "#059669"
+                  }
+                >
+                  {
+                    isStart
+                    ? "START"
+                    : "END"
+                  }
+                </text>
+              }
+            </g>
+          );
+        })}
+      </svg>
+
+      <div style={{
+        fontSize:11,
+        color:"#64748b",
+        padding:"0 12px 10px"
+      }}>
+        Solid arrows show forward routing. Dashed amber arrows
+        indicate same-level/backward routing such as rework loops.
+        Edge labels are routing probabilities.
+      </div>
+    </div>
+  );
+}
+
 function FrontierCard({title,item,target}) {
   if (!item) {
     return (
@@ -456,7 +987,7 @@ export default function Home() {
       return {
         ...prev,
         activities:
-          prev.activities.map(a => {
+          (prev.activities || []).map(a => {
             if (a.id !== id) {
               return a;
             }
@@ -492,20 +1023,44 @@ export default function Home() {
     setModel(prev => {
       if (!prev) return prev;
 
-      const transitions =
-        [...prev.transitions];
+      const selected =
+        activeArchitecture(prev);
 
-      transitions[index] = {
-        ...transitions[index],
-        [field]:
-          field === "probability"
-          ? Number(value)
-          : value
-      };
+      if (!selected) {
+        return prev;
+      }
+
+      const architectures =
+        (prev.architectures || [])
+        .map(arch => {
+          if (
+            arch.id
+            !== selected.id
+          ) {
+            return arch;
+          }
+
+          const transitions = [
+            ...(arch.transitions || [])
+          ];
+
+          transitions[index] = {
+            ...transitions[index],
+            [field]:
+              field === "probability"
+              ? Number(value)
+              : value
+          };
+
+          return {
+            ...arch,
+            transitions
+          };
+        });
 
       return {
         ...prev,
-        transitions
+        architectures
       };
     });
   }
@@ -543,7 +1098,7 @@ export default function Home() {
     setModel(prev => {
       if (
         !prev
-        || !prev.activities?.length
+        || !(prev.activities || []).length
       ) {
         return prev;
       }
@@ -632,14 +1187,8 @@ export default function Home() {
       return {
         ...prev,
         activities:
-          prev.activities.filter(
+          (prev.activities || []).filter(
             a => a.id !== id
-          ),
-        transitions:
-          prev.transitions.filter(
-            t =>
-              t.source !== id
-              && t.target !== id
           ),
         architectures:
           Array.isArray(
@@ -658,7 +1207,17 @@ export default function Home() {
                       x => x !== id
                     )
                   : a
-                    .enabled_activities
+                    .enabled_activities,
+                transitions:
+                  Array.isArray(
+                    a.transitions
+                  )
+                  ? a.transitions.filter(
+                      t =>
+                        t.source !== id
+                        && t.target !== id
+                    )
+                  : []
               })
             )
           : prev.architectures
@@ -668,19 +1227,31 @@ export default function Home() {
 
   function addTransition() {
     setModel(prev => {
-      if (
-        !prev
-        || !prev.transitions?.length
-      ) {
+      if (!prev) {
+        return prev;
+      }
+
+      const selected =
+        activeArchitecture(prev);
+
+      if (!selected) {
         return prev;
       }
 
       const t =
-        JSON.parse(
-          JSON.stringify(
-            prev.transitions[0]
+        selected.transitions?.length
+        ? JSON.parse(
+            JSON.stringify(
+              selected.transitions[0]
+            )
           )
-        );
+        : {
+            source:
+              prev.start_activity,
+            target:
+              prev.end_activity,
+            probability:1
+          };
 
       t.source =
         prev.start_activity;
@@ -692,10 +1263,19 @@ export default function Home() {
 
       return {
         ...prev,
-        transitions:[
-          ...prev.transitions,
-          t
-        ]
+        architectures:
+          (prev.architectures || [])
+          .map(arch =>
+            arch.id === selected.id
+            ? {
+                ...arch,
+                transitions:[
+                  ...(arch.transitions || []),
+                  t
+                ]
+              }
+            : arch
+          )
       };
     });
   }
@@ -706,11 +1286,28 @@ export default function Home() {
     setModel(prev => {
       if (!prev) return prev;
 
+      const selected =
+        activeArchitecture(prev);
+
+      if (!selected) {
+        return prev;
+      }
+
       return {
         ...prev,
-        transitions:
-          prev.transitions.filter(
-            (_,i) => i !== index
+        architectures:
+          (prev.architectures || [])
+          .map(arch =>
+            arch.id === selected.id
+            ? {
+                ...arch,
+                transitions:
+                  (arch.transitions || [])
+                  .filter(
+                    (_,i) => i !== index
+                  )
+              }
+            : arch
           )
       };
     });
@@ -1091,7 +1688,7 @@ export default function Home() {
             gap:8,
             flexWrap:"wrap"
           }}>
-            {model.activities.map(
+            {(model.activities || []).map(
               a =>
               <div
                 key={a.id}
@@ -1354,8 +1951,9 @@ export default function Home() {
                 fontSize:13,
                 color:"#6b7280"
               }}>
-                Edit the active process model before running
-                simulation or robust optimization.
+                Edit a general directed workflow with branching,
+                merging, exception paths, and rework loops before
+                running simulation or robust optimization.
               </div>
             </div>
 
@@ -1391,81 +1989,11 @@ export default function Home() {
           </div>
 
           <div style={{
-            marginTop:16,
-            overflowX:"auto",
-            padding:"12px 4px"
+            marginTop:16
           }}>
-            <div style={{
-              display:"flex",
-              alignItems:"center",
-              minWidth:"max-content"
-            }}>
-              {model.activities.map(
-                (a,i) =>
-                  <div
-                    key={a.id}
-                    style={{
-                      display:"flex",
-                      alignItems:"center"
-                    }}
-                  >
-                    <div style={{
-                      minWidth:155,
-                      padding:"12px 14px",
-                      border:"1px solid #c7d2fe",
-                      borderRadius:12,
-                      background:
-                        a.id
-                        === model
-                        .start_activity
-                        ? "#eef2ff"
-                        : a.id
-                          === model
-                          .end_activity
-                          ? "#ecfdf5"
-                          : "#fff"
-                    }}>
-                      <div style={{
-                        fontWeight:700
-                      }}>
-                        {a.name}
-                      </div>
-
-                      <div style={{
-                        fontSize:12,
-                        color:"#6b7280",
-                        marginTop:3
-                      }}>
-                        {
-                          Number(
-                            a
-                            .service_time
-                            ?.mean_minutes
-                            || 0
-                          ).toFixed(1)
-                        } min · {
-                          a.resource_pool
-                          || "no pool"
-                        }
-                      </div>
-                    </div>
-
-                    {i <
-                      model
-                      .activities
-                      .length - 1
-                      &&
-                      <div style={{
-                        padding:"0 8px",
-                        color:"#9ca3af",
-                        fontSize:22
-                      }}>
-                        →
-                      </div>
-                    }
-                  </div>
-              )}
-            </div>
+            <ProcessGraph
+              model={model}
+            />
           </div>
 
           <h3>
@@ -1496,7 +2024,7 @@ export default function Home() {
               </thead>
 
               <tbody>
-                {model.activities.map(
+                {(model.activities || []).map(
                   a =>
                     <tr key={a.id}>
                       <td style={{
@@ -1604,6 +2132,20 @@ export default function Home() {
           </h3>
 
           <div style={{
+            fontSize:12,
+            color:"#6b7280",
+            marginBottom:8
+          }}>
+            Active architecture: {
+              activeArchitecture(model)?.name
+              || activeArchitecture(model)?.id
+              || "none"
+            } · {
+              activeTransitions(model).length
+            } transition(s)
+          </div>
+
+          <div style={{
             overflowX:"auto"
           }}>
             <table style={{
@@ -1627,7 +2169,7 @@ export default function Home() {
               </thead>
 
               <tbody>
-                {model.transitions.map(
+                {activeTransitions(model).map(
                   (t,i) =>
                     <tr key={i}>
                       <td>
