@@ -56,15 +56,9 @@ function fmtFlow(v) {
   );
 }
 
-function fmtPctPoints(delta) {
-  const pp =
-    100 * Number(delta);
-
-  return (
-    (pp >= 0 ? "+" : "")
-    + pp.toFixed(1)
-    + " pp"
-  );
+function fmtMin(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toFixed(1) : "—";
 }
 
 function money(v) {
@@ -125,85 +119,7 @@ function activeTransitions(model) {
     : [];
 }
 
-function applyDesignToModel(model, architectureId, design) {
-  if (!model) return null;
-
-  const next = JSON.parse(JSON.stringify(model));
-  const d = design || {};
-
-  const archVar = (next.variables || []).find(v => v.name === "architecture");
-  if (archVar && architectureId) {
-    archVar.value = architectureId;
-  }
-
-  const resourceKey = Object.keys(next).find(
-    k => Array.isArray(next[k])
-      && next[k].length
-      && typeof next[k][0] === "object"
-      && next[k][0] !== null
-      && Object.prototype.hasOwnProperty.call(next[k][0], "capacity")
-      && k !== "variables"
-  );
-
-  if (resourceKey) {
-    next[resourceKey] = next[resourceKey].map(r => {
-      const key = `resource_capacity__${r.id}`;
-      return Object.prototype.hasOwnProperty.call(d, key)
-        ? {...r, capacity:Number(d[key])}
-        : r;
-    });
-  }
-
-  next.architectures = (next.architectures || []).map(a => {
-    if (architectureId && a.id !== architectureId) return a;
-    return {
-      ...a,
-      transitions:(a.transitions || []).map(t => {
-        const key = `routing_probability__${t.source}__${t.target}`;
-        return Object.prototype.hasOwnProperty.call(d, key)
-          ? {...t, probability:Number(d[key])}
-          : t;
-      })
-    };
-  });
-
-  return next;
-}
-
-function designChangeLines(model, design) {
-  if (!model || !design) return [];
-  const lines = [];
-
-  Object.entries(design).forEach(([name,value]) => {
-    if (name.startsWith("resource_capacity__")) {
-      const id = name.replace("resource_capacity__", "");
-      const resource = (model.resources || []).find(r => r.id === id);
-      const before = resource?.capacity;
-      if (before !== undefined && Number(before) !== Number(value)) {
-        lines.push(`${resource?.name || id}: ${Number(before).toFixed(0)} → ${Number(value).toFixed(0)}`);
-      }
-    } else if (name.startsWith("routing_probability__")) {
-      const rest = name.replace("routing_probability__", "");
-      const parts = rest.split("__");
-      const source = parts[0];
-      const target = parts.slice(1).join("__");
-      const t = activeTransitions(model).find(x => x.source === source && x.target === target);
-      const before = t?.probability;
-      if (before !== undefined && Math.abs(Number(before)-Number(value)) > 1e-9) {
-        lines.push(`${source} → ${target}: ${fmtPct(before)} → ${fmtPct(value)}`);
-      }
-    } else if (name === "automation_level") {
-      const v = (model.variables || []).find(x => x.name === name);
-      if (v && Math.abs(Number(v.value)-Number(value)) > 1e-9) {
-        lines.push(`Automation: ${fmtPct(v.value)} → ${fmtPct(value)}`);
-      }
-    }
-  });
-
-  return lines;
-}
-
-function ProcessGraph({model,onSelectActivity,onSelectTransition,selectedActivityId,selectedTransitionIndex}) {
+function ProcessGraph({model}) {
   const activities =
     Array.isArray(model?.activities)
     ? model.activities
@@ -509,11 +425,9 @@ function ProcessGraph({model,onSelectActivity,onSelectTransition,selectedActivit
                 ) / 2;
 
             return (
-              <g
-                key={`${t.source}-${t.target}-${i}`}
-                onClick={() => onSelectTransition?.(i)}
-                style={{cursor:onSelectTransition ? "pointer" : "default"}}
-              >
+              <g key={
+                `${t.source}-${t.target}-${i}`
+              }>
                 <path
                   d={edgePath(
                     t.source,
@@ -522,13 +436,11 @@ function ProcessGraph({model,onSelectActivity,onSelectTransition,selectedActivit
                   )}
                   fill="none"
                   stroke={
-                    selectedTransitionIndex === i
-                    ? "#2563eb"
-                    : backward
-                      ? "#b45309"
-                      : "#64748b"
+                    backward
+                    ? "#b45309"
+                    : "#64748b"
                   }
-                  strokeWidth={selectedTransitionIndex === i ? "4" : "2"}
+                  strokeWidth="2"
                   strokeDasharray={
                     backward
                     ? "6 4"
@@ -591,9 +503,9 @@ function ProcessGraph({model,onSelectActivity,onSelectTransition,selectedActivit
           return (
             <g
               key={a.id}
-              transform={`translate(${p.x},${p.y})`}
-              onClick={() => onSelectActivity?.(a.id)}
-              style={{cursor:onSelectActivity ? "pointer" : "default"}}
+              transform={
+                `translate(${p.x},${p.y})`
+              }
             >
               <rect
                 width={nodeW}
@@ -614,11 +526,9 @@ function ProcessGraph({model,onSelectActivity,onSelectTransition,selectedActivit
                     : "#cbd5e1"
                 }
                 strokeWidth={
-                  selectedActivityId === a.id
-                  ? "4"
-                  : isStart || isEnd
-                    ? "2"
-                    : "1.5"
+                  isStart || isEnd
+                  ? "2"
+                  : "1.5"
                 }
               />
 
@@ -694,67 +604,6 @@ function ProcessGraph({model,onSelectActivity,onSelectTransition,selectedActivit
         Solid arrows show forward routing. Dashed amber arrows
         indicate same-level/backward routing such as rework loops.
         Edge labels are routing probabilities.
-      </div>
-    </div>
-  );
-}
-
-function DesignSpaceChart({results,target=0.90}) {
-  const points = [];
-
-  (results || []).forEach(r => {
-    const frontier = r?.robust_frontier?.frontier || [];
-    frontier.forEach(p => points.push({
-      architecture:r.architecture,
-      cost:Number(p.cost),
-      robustness:Number(p.robustness_probability),
-      targetMet:Boolean(p.target_met)
-    }));
-  });
-
-  if (!points.length) return null;
-
-  const width = 760;
-  const height = 300;
-  const pad = {left:72,right:25,top:25,bottom:48};
-  const costs = points.map(p => p.cost);
-  const cmin = Math.min(...costs);
-  const cmax = Math.max(...costs);
-  const span = Math.max(cmax-cmin, 1);
-  const x = c => pad.left + (c-cmin)/span*(width-pad.left-pad.right);
-  const y = r => pad.top + (1-r)*(height-pad.top-pad.bottom);
-
-  return (
-    <div style={{...card,marginTop:16,background:"#fafafa"}}>
-      <div style={{fontWeight:800}}>Design-space frontier</div>
-      <div style={{fontSize:12,color:"#6b7280",marginTop:3}}>
-        Each point is a cost/robustness candidate from the replicated frontier.
-        The dashed line marks the robustness target.
-      </div>
-      <div style={{overflowX:"auto",marginTop:8}}>
-        <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
-          <line x1={pad.left} y1={pad.top} x2={pad.left} y2={height-pad.bottom} stroke="#94a3b8" />
-          <line x1={pad.left} y1={height-pad.bottom} x2={width-pad.right} y2={height-pad.bottom} stroke="#94a3b8" />
-          <line x1={pad.left} y1={y(target)} x2={width-pad.right} y2={y(target)} stroke="#b45309" strokeDasharray="6 5" />
-          <text x={width-pad.right} y={y(target)-5} textAnchor="end" fontSize="11" fill="#92400e">{fmtPct(target)} target</text>
-          {[0.5,0.75,0.9,1.0].map(v => (
-            <g key={v}>
-              <line x1={pad.left-5} y1={y(v)} x2={pad.left} y2={y(v)} stroke="#94a3b8"/>
-              <text x={pad.left-9} y={y(v)+4} textAnchor="end" fontSize="10" fill="#64748b">{fmtPct(v)}</text>
-            </g>
-          ))}
-          {points.map((p,i) => (
-            <g key={`${p.architecture}-${i}`}>
-              <circle cx={x(p.cost)} cy={y(p.robustness)} r={p.targetMet ? 6 : 4.5} fill={p.targetMet ? "#16a34a" : "#64748b"}>
-                <title>{`${p.architecture}: ${money(p.cost)}, ${fmtPct(p.robustness)}`}</title>
-              </circle>
-            </g>
-          ))}
-          <text x={(pad.left+width-pad.right)/2} y={height-10} textAnchor="middle" fontSize="11" fill="#475569">Annual cost</text>
-          <text transform={`translate(16 ${(pad.top+height-pad.bottom)/2}) rotate(-90)`} textAnchor="middle" fontSize="11" fill="#475569">Replicated feasibility</text>
-          <text x={pad.left} y={height-pad.bottom+18} fontSize="10" fill="#64748b">{money(cmin)}</text>
-          <text x={width-pad.right} y={height-pad.bottom+18} textAnchor="end" fontSize="10" fill="#64748b">{money(cmax)}</text>
-        </svg>
       </div>
     </div>
   );
@@ -938,8 +787,10 @@ export default function Home() {
     setCalibration
   ] = useState(null);
 
-  const [selectedActivityId,setSelectedActivityId] = useState(null);
-  const [selectedTransitionIndex,setSelectedTransitionIndex] = useState(null);
+  const [
+    designVariableEnabled,
+    setDesignVariableEnabled
+  ] = useState({});
 
   useEffect(() => {
     if (!runningAction) {
@@ -1066,6 +917,63 @@ export default function Home() {
     try {
       setOpt(null);
 
+      let optimizationModel = model;
+
+      if (model) {
+        const numericVars =
+          numericDesignVariables(model);
+
+        const selectedVars =
+          numericVars.filter(
+            v => designVariableEnabled[v.name] !== false
+          );
+
+        if (numericVars.length && !selectedVars.length) {
+          setStatus(
+            "Select at least one design variable before optimization"
+          );
+          return;
+        }
+
+        for (const v of selectedVars) {
+          const lo = Number(v.lower);
+          const hi = Number(v.upper);
+
+          if (
+            !Number.isFinite(lo)
+            || !Number.isFinite(hi)
+            || hi <= lo
+          ) {
+            setStatus(
+              `Invalid bounds for ${v.name}: Max must be greater than Min`
+            );
+            return;
+          }
+
+          if (
+            v.kind === "quantized"
+            && (
+              !Number.isFinite(Number(v.step))
+              || Number(v.step) <= 0
+            )
+          ) {
+            setStatus(
+              `Invalid step for ${v.name}: Step must be greater than zero`
+            );
+            return;
+          }
+        }
+
+        optimizationModel = {
+          ...model,
+          variables:(model.variables || []).filter(
+            v =>
+              !isNumericDesignVariable(v)
+              || designVariableEnabled[v.name] !== false
+          )
+        };
+      }
+
       setOpt(
         await call(
           "/api/optimize",
@@ -1076,7 +984,7 @@ export default function Home() {
                 "application/json"
             },
             body:JSON.stringify({
-              model:model || undefined,
+              model:optimizationModel || undefined,
               robustness_target:0.90
             })
           },
@@ -1091,36 +999,11 @@ export default function Home() {
 
   async function runCompare() {
     try {
-      const selected =
-        opt?.results?.[0];
-
-      if (!model || !selected?.best) {
-        setStatus(
-          "Run simulation and optimization before comparing AS-IS vs TO-BE"
-        );
-        return;
-      }
-
       setCmp(
         await call(
           "/api/compare",
           {
-            method:"POST",
-            headers:{
-              "Content-Type":"application/json"
-            },
-            body:JSON.stringify({
-              model,
-              baseline_architecture_id:
-                model.architectures?.[0]?.id,
-              future_architecture_id:
-                selected.architecture,
-              future_design:
-                selected.best.design,
-              cases:1200,
-              seed:2,
-              replications:20
-            })
+            method:"POST"
           },
           "Comparing AS-IS vs TO-BE"
         )
@@ -1158,6 +1041,73 @@ export default function Home() {
     return m[key]
       .map(r => r.id)
       .filter(Boolean);
+  }
+
+  function isNumericDesignVariable(v) {
+    return (
+      v?.kind === "continuous"
+      || v?.kind === "quantized"
+    );
+  }
+
+  function numericDesignVariables(m) {
+    return Array.isArray(m?.variables)
+      ? m.variables.filter(
+          isNumericDesignVariable
+        )
+      : [];
+  }
+
+  function updateDesignVariable(
+    name,
+    field,
+    value
+  ) {
+    setModel(prev => {
+      if (!prev) return prev;
+
+      return {
+        ...prev,
+        variables:(prev.variables || []).map(v => {
+          if (v.name !== name) return v;
+
+          if (field === "kind") {
+            return {
+              ...v,
+              kind:value,
+              step:
+                value === "quantized"
+                ? Number(v.step || 1)
+                : v.step
+            };
+          }
+
+          return {
+            ...v,
+            [field]:Number(value)
+          };
+        })
+      };
+    });
+  }
+
+  function currentDesignValue(v) {
+    for (const key of [
+      "value",
+      "current",
+      "initial",
+      "default"
+    ]) {
+      if (
+        v?.[key] !== undefined
+        && v?.[key] !== null
+        && Number.isFinite(Number(v[key]))
+      ) {
+        return Number(v[key]);
+      }
+    }
+
+    return null;
   }
 
   function updateActivity(
@@ -1262,55 +1212,19 @@ export default function Home() {
 
       if (!key) return prev;
 
-      const numericValue =
-        Number(value);
-
-      const next = {
+      return {
         ...prev,
         [key]:
           prev[key].map(r =>
             r.id === id
             ? {
                 ...r,
-                [field]:numericValue
+                [field]:
+                  Number(value)
               }
             : r
           )
       };
-
-      if (
-        field === "capacity"
-        && Array.isArray(prev.variables)
-      ) {
-        const variableName =
-          `resource_capacity__${id}`;
-
-        next.variables =
-          prev.variables.map(v =>
-            v.name === variableName
-            ? {
-                ...v,
-                value:numericValue,
-                lower:
-                  v.lower == null
-                  ? 1
-                  : Math.min(
-                      Number(v.lower),
-                      numericValue
-                    ),
-                upper:
-                  v.upper == null
-                  ? Math.max(2,numericValue*2)
-                  : Math.max(
-                      Number(v.upper),
-                      numericValue
-                    )
-              }
-            : v
-          );
-      }
-
-      return next;
     });
   }
 
@@ -1897,17 +1811,15 @@ export default function Home() {
           </button>
 
           <button
-            disabled={busy || !model || !opt?.results?.[0]?.best}
+            disabled={busy}
             style={{
               ...buttonStyle,
               opacity:
-                busy || !model || !opt?.results?.[0]?.best
-                ? 0.55
-                : 1
+                busy ? 0.55 : 1
             }}
             onClick={runCompare}
           >
-            Compare selected TO-BE
+            Compare AS-IS vs TO-BE
           </button>
         </div>
       </section>
@@ -1946,8 +1858,10 @@ export default function Home() {
                   color:"#6b7280"
                 }}>
                   {
-                    a.service_time
-                    .mean_minutes
+                    fmtMin(
+                      a.service_time
+                      ?.mean_minutes
+                    )
                   } min
                 </div>
               </div>
@@ -2127,114 +2041,43 @@ export default function Home() {
             marginTop:14
           }}>
             <b>
-              Calibrated AS-IS digital twin
+              Calibration summary
             </b>
 
             <div style={{
-              display:"grid",
-              gridTemplateColumns:
-                "repeat(auto-fit,minmax(150px,1fr))",
-              gap:10,
-              marginTop:12
+              fontSize:13,
+              color:"#4b5563",
+              marginTop:6
             }}>
-              <Metric
-                label="Cases"
-                value={calibration.cases}
-              />
-              <Metric
-                label="Activities"
-                value={calibration.activities}
-              />
-              <Metric
-                label="Resource pools"
-                value={calibration.resource_pools}
-              />
-              <Metric
-                label="Arrival rate / hr"
-                value={Number(
-                  calibration.arrival_rate_per_hour
-                ).toFixed(2)}
-              />
-              <Metric
-                label="Observed P95 cycle"
-                value={`${Number(
-                  calibration.p95_cycle_minutes_observed
-                ).toFixed(1)} min`}
-              />
-              <Metric
-                label="Observed SLA"
-                value={fmtPct(
-                  calibration.sla_attainment_observed
-                )}
-              />
-              <Metric
-                label="Cases with rework"
-                value={fmtPct(
-                  calibration.rework_case_rate
-                )}
-              />
-              <Metric
-                label="Top variant share"
-                value={fmtPct(
-                  calibration.most_common_variant_share
-                )}
-              />
-              <Metric
-                label="Structural bottleneck"
-                value={
-                  calibration.bottleneck_resource
-                  || "none"
-                }
-              />
-              <Metric
-                label="Max utilization"
-                value={fmtPct(
-                  calibration.max_resource_utilization
-                  || 0
-                )}
-              />
-              <Metric
-                label="Capacity state"
-                value={
-                  calibration.capacity_status
-                  || "n/a"
-                }
-              />
+              Cases {
+                calibration.cases
+              } · Activities {
+                calibration.activities
+              } · Arrival rate {
+                Number(
+                  calibration
+                  .arrival_rate_per_hour
+                ).toFixed(2)
+              }/hr · Estimated analysts {
+                calibration
+                .estimated_analyst_capacity
+              } · Repeat events {
+                calibration
+                .repeat_event_count
+              }
             </div>
 
             <div style={{
               fontSize:12,
               color:"#6b7280",
-              marginTop:10
+              marginTop:5
             }}>
-              Start activity: {calibration.start_activity}. The calibrated
-              model now contains generic resource pools and capacity design
-              variables and is used directly by Simulation and Optimization.
+              Start activity: {
+                calibration
+                .start_activity
+              }. The calibrated model is now the active
+              model used by Simulation and Optimization.
             </div>
-
-            {Array.isArray(calibration.top_variants) && calibration.top_variants.length > 0 &&
-              <div style={{marginTop:18}}>
-                <div style={{fontWeight:800,marginBottom:8}}>Top process variants</div>
-                <div style={{overflowX:"auto"}}>
-                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                    <thead><tr><th align="left">#</th><th align="left">Path</th><th align="right">Cases</th><th align="right">Share</th><th align="right">Mean cycle</th><th align="right">P95 cycle</th><th align="left">Rework</th></tr></thead>
-                    <tbody>
-                      {calibration.top_variants.slice(0,8).map(v =>
-                        <tr key={v.rank}>
-                          <td style={{padding:"6px 4px"}}>{v.rank}</td>
-                          <td style={{padding:"6px 4px",minWidth:280}}>{v.path}</td>
-                          <td align="right">{v.cases}</td>
-                          <td align="right">{fmtPct(v.share)}</td>
-                          <td align="right">{Number(v.mean_cycle_minutes).toFixed(1)} min</td>
-                          <td align="right">{Number(v.p95_cycle_minutes).toFixed(1)} min</td>
-                          <td style={{paddingLeft:8,fontWeight:v.has_rework ? 700 : 400,color:v.has_rework ? "#92400e" : "#475569"}}>{v.has_rework ? "Yes" : "No"}</td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            }
           </div>
         }
       </section>
@@ -2304,75 +2147,8 @@ export default function Home() {
           }}>
             <ProcessGraph
               model={model}
-              selectedActivityId={selectedActivityId}
-              selectedTransitionIndex={selectedTransitionIndex}
-              onSelectActivity={id => {
-                setSelectedActivityId(id);
-                setSelectedTransitionIndex(null);
-              }}
-              onSelectTransition={i => {
-                setSelectedTransitionIndex(i);
-                setSelectedActivityId(null);
-              }}
             />
           </div>
-
-          {(selectedActivityId || selectedTransitionIndex !== null) &&
-            <div style={{...card,marginTop:12,background:"#f8fafc"}}>
-              {selectedActivityId && (() => {
-                const a = (model.activities || []).find(x => x.id === selectedActivityId);
-                if (!a) return null;
-                return (
-                  <>
-                    <div style={{fontWeight:800,marginBottom:10}}>Selected activity</div>
-                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:10}}>
-                      <label style={{fontSize:12}}>Name
-                        <input value={a.name} onChange={e => updateActivity(a.id,"name",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}/>
-                      </label>
-                      <label style={{fontSize:12}}>Mean service (min)
-                        <input type="number" min="0.01" step="0.1" value={a.service_time?.mean_minutes ?? 0} onChange={e => updateActivity(a.id,"mean_minutes",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}/>
-                      </label>
-                      <label style={{fontSize:12}}>Resource pool
-                        <select value={a.resource_pool || ""} onChange={e => updateActivity(a.id,"resource_pool",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}>
-                          <option value="">No resource pool</option>
-                          {resourceOptions(model).map(r => <option key={r} value={r}>{r}</option>)}
-                        </select>
-                      </label>
-                    </div>
-                  </>
-                );
-              })()}
-              {selectedTransitionIndex !== null && (() => {
-                const t = activeTransitions(model)[selectedTransitionIndex];
-                if (!t) return null;
-                const backward = (() => {
-                  const acts = (model.activities || []).map(a => a.id);
-                  return acts.indexOf(t.target) <= acts.indexOf(t.source);
-                })();
-                return (
-                  <>
-                    <div style={{fontWeight:800,marginBottom:10}}>Selected transition {backward ? "· rework/return path" : ""}</div>
-                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:10}}>
-                      <label style={{fontSize:12}}>From
-                        <select value={t.source} onChange={e => updateTransition(selectedTransitionIndex,"source",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}>
-                          {(model.activities || []).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-                        </select>
-                      </label>
-                      <label style={{fontSize:12}}>To
-                        <select value={t.target} onChange={e => updateTransition(selectedTransitionIndex,"target",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}>
-                          {(model.activities || []).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-                        </select>
-                      </label>
-                      <label style={{fontSize:12}}>Routing probability
-                        <input type="number" min="0" max="1" step="0.01" value={t.probability} onChange={e => updateTransition(selectedTransitionIndex,"probability",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}/>
-                      </label>
-                    </div>
-                    <button style={{...buttonStyle,marginTop:10}} onClick={() => {removeTransition(selectedTransitionIndex); setSelectedTransitionIndex(null);}}>Delete transition</button>
-                  </>
-                );
-              })()}
-            </div>
-          }
 
           <h3>
             Activities
@@ -2699,36 +2475,197 @@ export default function Home() {
                           marginTop:4
                         }}
                       />
-
-                      <div style={{
-                        marginTop:8
-                      }}>
-                        Cost / hour
-                      </div>
-
-                      <input
-                        type="number"
-                        min="0"
-                        step="1"
-                        value={r.cost_per_hour ?? 75}
-                        onChange={
-                          e =>
-                            updateResource(
-                              r.id,
-                              "cost_per_hour",
-                              e.target.value
-                            )
-                        }
-                        style={{
-                          width:"100%",
-                          marginTop:4
-                        }}
-                      />
                     </label>
                   )
                 }
               </div>
             </>
+          }
+        </section>
+      }
+
+      {model &&
+        <section style={{
+          ...card,
+          marginTop:18
+        }}>
+          <h2 style={{
+            margin:"0 0 4px"
+          }}>
+            Design Variables
+          </h2>
+
+          <div style={{
+            fontSize:13,
+            color:"#6b7280",
+            lineHeight:1.5,
+            marginBottom:12
+          }}>
+            Choose exactly which numeric variables the optimizer may change.
+            Unchecked variables stay fixed at the current process-model value.
+            Continuous variables move freely within their bounds; quantized
+            variables move in the specified step size. Architecture families
+            remain the discrete outer search.
+          </div>
+
+          {numericDesignVariables(model).length
+            ?
+            <div style={{
+              overflowX:"auto"
+            }}>
+              <table style={{
+                width:"100%",
+                borderCollapse:"collapse",
+                fontSize:13
+              }}>
+                <thead>
+                  <tr>
+                    <th align="left" style={{padding:"7px 5px"}}>Change?</th>
+                    <th align="left" style={{padding:"7px 5px"}}>Variable</th>
+                    <th align="left" style={{padding:"7px 5px"}}>Current</th>
+                    <th align="left" style={{padding:"7px 5px"}}>Type</th>
+                    <th align="left" style={{padding:"7px 5px"}}>Min</th>
+                    <th align="left" style={{padding:"7px 5px"}}>Max</th>
+                    <th align="left" style={{padding:"7px 5px"}}>Step</th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {numericDesignVariables(model).map(v => {
+                    const enabled =
+                      designVariableEnabled[v.name] !== false;
+                    const current =
+                      currentDesignValue(v);
+
+                    return (
+                      <tr
+                        key={v.name}
+                        style={{
+                          borderTop:"1px solid #e5e7eb",
+                          opacity:enabled ? 1 : 0.55
+                        }}
+                      >
+                        <td style={{padding:"8px 5px"}}>
+                          <input
+                            type="checkbox"
+                            checked={enabled}
+                            onChange={e =>
+                              setDesignVariableEnabled(prev => ({
+                                ...prev,
+                                [v.name]:e.target.checked
+                              }))
+                            }
+                          />
+                        </td>
+
+                        <td style={{padding:"8px 5px"}}>
+                          <b>{v.name}</b>
+                        </td>
+
+                        <td style={{padding:"8px 5px", color:"#6b7280"}}>
+                          {current === null
+                            ? "model value"
+                            : Number(current).toLocaleString()}
+                        </td>
+
+                        <td style={{padding:"8px 5px"}}>
+                          <select
+                            value={v.kind}
+                            disabled={!enabled || busy}
+                            onChange={e =>
+                              updateDesignVariable(
+                                v.name,
+                                "kind",
+                                e.target.value
+                              )
+                            }
+                          >
+                            <option value="continuous">Continuous</option>
+                            <option value="quantized">Quantized</option>
+                          </select>
+                        </td>
+
+                        <td style={{padding:"8px 5px"}}>
+                          <input
+                            type="number"
+                            value={v.lower ?? ""}
+                            disabled={!enabled || busy}
+                            onChange={e =>
+                              updateDesignVariable(
+                                v.name,
+                                "lower",
+                                e.target.value
+                              )
+                            }
+                            style={{width:95}}
+                          />
+                        </td>
+
+                        <td style={{padding:"8px 5px"}}>
+                          <input
+                            type="number"
+                            value={v.upper ?? ""}
+                            disabled={!enabled || busy}
+                            onChange={e =>
+                              updateDesignVariable(
+                                v.name,
+                                "upper",
+                                e.target.value
+                              )
+                            }
+                            style={{width:95}}
+                          />
+                        </td>
+
+                        <td style={{padding:"8px 5px"}}>
+                          {v.kind === "quantized"
+                            ?
+                            <input
+                              type="number"
+                              min="0.000001"
+                              value={v.step ?? 1}
+                              disabled={!enabled || busy}
+                              onChange={e =>
+                                updateDesignVariable(
+                                  v.name,
+                                  "step",
+                                  e.target.value
+                                )
+                              }
+                              style={{width:85}}
+                            />
+                            :
+                            <span style={{color:"#9ca3af"}}>—</span>
+                          }
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+
+              <div style={{
+                fontSize:12,
+                color:"#6b7280",
+                marginTop:10
+              }}>
+                {numericDesignVariables(model).filter(
+                  v => designVariableEnabled[v.name] !== false
+                ).length} of {numericDesignVariables(model).length}
+                {" "}numeric design variables selected for DOE / evolving-SVD search.
+              </div>
+            </div>
+            :
+            <div style={{
+              padding:"12px 14px",
+              background:"#f9fafb",
+              borderRadius:8,
+              color:"#6b7280",
+              fontSize:13
+            }}>
+              This model does not currently expose any continuous or quantized
+              design variables.
+            </div>
           }
         </section>
       }
@@ -2864,72 +2801,6 @@ export default function Home() {
             Candidate comparisons use the same random seeds.
             Final validation uses 40 independent replications.
           </p>
-
-          {opt.results?.length > 0 &&
-            (() => {
-              const rec =
-                opt.results[0];
-
-              const best =
-                rec.best;
-
-              const rob =
-                rec.robustness;
-
-              return (
-                <div style={{
-                  ...card,
-                  background:"#f0fdf4",
-                  border:"1px solid #bbf7d0",
-                  marginBottom:16
-                }}>
-                  <div style={{
-                    fontSize:12,
-                    fontWeight:800,
-                    color:"#166534",
-                    textTransform:"uppercase"
-                  }}>
-                    Recommended architecture
-                  </div>
-
-                  <div style={{
-                    fontSize:22,
-                    fontWeight:800,
-                    marginTop:4
-                  }}>
-                    {rec.architecture}
-                  </div>
-
-                  <div style={{
-                    fontSize:13,
-                    color:"#475569",
-                    marginTop:6,
-                    lineHeight:1.5
-                  }}>
-                    Selected because it {
-                      rec.robust_target_met
-                      ? "meets the robustness target and is the lowest-cost target-meeting architecture"
-                      : "is the strongest available architecture even though the robustness target is not yet met"
-                    }.
-                    {best?.metrics?.annual_cost !== undefined
-                      ? ` Annual cost ${money(best.metrics.annual_cost)}.`
-                      : ""}
-                    {rob?.probability !== undefined
-                      ? ` Final replicated feasibility ${fmtPct(rob.probability)}.`
-                      : ""}
-                  </div>
-
-                  {best?.design && designChangeLines(model,best.design).length > 0 &&
-                    <div style={{marginTop:10,fontSize:12,color:"#334155"}}>
-                      <b>Why this design:</b> {designChangeLines(model,best.design).slice(0,6).join(" · ")}
-                    </div>
-                  }
-                </div>
-              );
-            })()
-          }
-
-          <DesignSpaceChart results={opt.results} target={0.90} />
 
           {opt.results.map(
             (r,idx) => {
@@ -3318,43 +3189,6 @@ export default function Home() {
                           )
                         }
                       </div>
-
-                      {rob
-                        .probability_backlog_growth_above_0_05
-                        >= 0.25
-                        &&
-                        <div style={{
-                          marginTop:8,
-                          padding:"8px 10px",
-                          borderRadius:8,
-                          background:
-                            rob
-                            .probability_backlog_growth_above_0_05
-                            >= 0.50
-                            ? "#fef2f2"
-                            : "#fffbeb",
-                          color:
-                            rob
-                            .probability_backlog_growth_above_0_05
-                            >= 0.50
-                            ? "#991b1b"
-                            : "#92400e",
-                          fontSize:12,
-                          fontWeight:700
-                        }}>
-                          {rob
-                            .probability_backlog_growth_above_0_05
-                            >= 0.50
-                            ? "High"
-                            : "Elevated"
-                          } backlog-drift risk: {
-                            fmtPct(
-                              rob
-                              .probability_backlog_growth_above_0_05
-                            )
-                          } of validation runs exceeded +0.05 backlog/hr.
-                        </div>
-                      }
                     </div>
                   }
                 </div>
@@ -3372,145 +3206,54 @@ export default function Home() {
           <h2 style={{
             marginTop:0
           }}>
-            AS-IS vs selected TO-BE
+            AS-IS vs TO-BE
           </h2>
 
           <div style={{
-            fontSize:13,
-            color:"#6b7280",
-            marginBottom:12
+            display:"grid",
+            gridTemplateColumns:
+              "repeat(2,minmax(0,1fr))",
+            gap:16
           }}>
-            {cmp.baseline_architecture} → {cmp.future_architecture}
-            {cmp.comparison_method &&
-              <>
-                {" "}· {
-                  cmp.comparison_method.replications
-                } paired replications · {
-                  cmp.comparison_method.cases_per_replication
-                } cases each · common random numbers
-              </>
-            }
-          </div>
+            <div>
+              <h3>
+                Baseline
+              </h3>
 
-          {model && opt?.results?.[0]?.best &&
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(420px,1fr))",gap:14,marginBottom:16}}>
-              <div>
-                <div style={{fontWeight:800,marginBottom:6}}>AS-IS workflow</div>
-                <ProcessGraph model={model} />
-              </div>
-              <div>
-                <div style={{fontWeight:800,marginBottom:6}}>Selected TO-BE workflow</div>
-                <ProcessGraph model={applyDesignToModel(model,cmp.future_architecture,opt.results[0].best.design)} />
-              </div>
+              <pre style={{
+                whiteSpace:"pre-wrap",
+                fontSize:13
+              }}>
+                {
+                  JSON.stringify(
+                    cmp
+                    .baseline_metrics,
+                    null,
+                    2
+                  )
+                }
+              </pre>
             </div>
-          }
 
-          <div style={{
-            overflowX:"auto"
-          }}>
-            <table style={{
-              width:"100%",
-              borderCollapse:"collapse",
-              fontSize:13
-            }}>
-              <thead>
-                <tr>
-                  <th align="left" style={{padding:8}}>Metric</th>
-                  <th align="right" style={{padding:8}}>AS-IS</th>
-                  <th align="right" style={{padding:8}}>TO-BE</th>
-                  <th align="right" style={{padding:8}}>Change</th>
-                </tr>
-              </thead>
-              <tbody>
-                {[
-                  [
-                    "Annual cost",
-                    cmp.baseline_metrics.annual_cost,
-                    cmp.future_metrics.annual_cost,
-                    money,
-                    true,
-                    "relative"
-                  ],
-                  [
-                    "Throughput / hr",
-                    cmp.baseline_metrics.throughput_per_hour,
-                    cmp.future_metrics.throughput_per_hour,
-                    v => Number(v).toFixed(2),
-                    false,
-                    "relative"
-                  ],
-                  [
-                    "Flow balance",
-                    cmp.baseline_metrics.flow_balance,
-                    cmp.future_metrics.flow_balance,
-                    fmtFlow,
-                    false,
-                    "points"
-                  ],
-                  [
-                    "P95 cycle (min)",
-                    cmp.baseline_metrics.p95_cycle_minutes,
-                    cmp.future_metrics.p95_cycle_minutes,
-                    v => Number(v).toFixed(1),
-                    true,
-                    "relative"
-                  ],
-                  [
-                    "SLA attainment",
-                    cmp.baseline_metrics.sla_attainment,
-                    cmp.future_metrics.sla_attainment,
-                    fmtPct,
-                    false,
-                    "points"
-                  ],
-                  [
-                    "Max utilization",
-                    cmp.baseline_metrics.max_resource_utilization,
-                    cmp.future_metrics.max_resource_utilization,
-                    fmtPct,
-                    true,
-                    "points"
-                  ],
-                  [
-                    "Backlog growth / hr",
-                    cmp.baseline_metrics.backlog_growth_per_hour,
-                    cmp.future_metrics.backlog_growth_per_hour,
-                    v => Number(v).toFixed(2),
-                    true,
-                    "relative"
-                  ]
-                ].map(([label,a,b,fmt,lowerBetter,changeType]) => {
-                  const delta = Number(b) - Number(a);
-                  const pct = Math.abs(Number(a)) > 1e-9
-                    ? 100 * delta / Math.abs(Number(a))
-                    : null;
-                  const improved = lowerBetter
-                    ? delta < 0
-                    : delta > 0;
-                  return (
-                    <tr key={label} style={{borderTop:"1px solid #eee"}}>
-                      <td style={{padding:8}}>{label}</td>
-                      <td align="right" style={{padding:8}}>{fmt(a)}</td>
-                      <td align="right" style={{padding:8,fontWeight:700}}>{fmt(b)}</td>
-                      <td align="right" style={{
-                        padding:8,
-                        color: Math.abs(delta) < 1e-9
-                          ? "#6b7280"
-                          : improved
-                            ? "#166534"
-                            : "#991b1b"
-                      }}>
-                        {changeType === "points"
-                          ? fmtPctPoints(delta)
-                          : pct === null
-                            ? `${delta >= 0 ? "+" : ""}${delta.toFixed(2)}`
-                            : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+            <div>
+              <h3>
+                Future state
+              </h3>
+
+              <pre style={{
+                whiteSpace:"pre-wrap",
+                fontSize:13
+              }}>
+                {
+                  JSON.stringify(
+                    cmp
+                    .future_metrics,
+                    null,
+                    2
+                  )
+                }
+              </pre>
+            </div>
           </div>
         </section>
       }
