@@ -17,10 +17,11 @@ from .core.optimization import (
     optimize_families,
     calculate_structural_capacity,
 )
+from .core.manual_svd import replicated_manual_svd, apply_manual_mode_step
 
 app = FastAPI(
     title="Process Design Space Platform API",
-    version="0.13.0",
+    version="0.14.0",
 )
 
 app.add_middleware(
@@ -88,6 +89,31 @@ class OptimizationRequest(BaseModel):
     robustness_cases: int = 1200
 
 
+
+
+class ManualSVDRequest(BaseModel):
+    model: ProcessModel = DEMO_MODEL
+    architecture_id: str = "baseline"
+    design: dict[str, float] = {}
+    metrics: list[str] = [
+        "throughput_per_hour",
+        "p95_cycle_minutes",
+        "sla_attainment",
+        "annual_cost",
+        "max_resource_utilization",
+    ]
+    replications: int = 6
+    cases: int = 500
+    seed_start: int = 3100
+
+
+class ManualSVDStepRequest(BaseModel):
+    model: ProcessModel = DEMO_MODEL
+    design: dict[str, float]
+    components: dict[str, float]
+    step_fraction: float = 0.25
+
+
 class CompareRequest(BaseModel):
     model: ProcessModel = DEMO_MODEL
     baseline_architecture_id: str | None = None
@@ -102,7 +128,7 @@ class CompareRequest(BaseModel):
 def health():
     return {
         "ok": True,
-        "version": "0.13.0",
+        "version": "0.14.0",
     }
 
 
@@ -328,6 +354,37 @@ def optimize_endpoint(
             status_code=400,
             detail=str(e),
         )
+
+
+
+
+@app.post("/api/manual-svd/analyze")
+def manual_svd_analyze(req: ManualSVDRequest):
+    try:
+        return replicated_manual_svd(
+            req.model,
+            req.architecture_id,
+            design=req.design,
+            metric_names=req.metrics,
+            replications=req.replications,
+            cases=req.cases,
+            seed_start=req.seed_start,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/manual-svd/step")
+def manual_svd_step(req: ManualSVDStepRequest):
+    try:
+        return apply_manual_mode_step(
+            req.model,
+            req.design,
+            req.components,
+            req.step_fraction,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/api/compare")

@@ -792,6 +792,27 @@ export default function Home() {
     setDesignVariableEnabled
   ] = useState({});
 
+  const [
+    manualCommitted,
+    setManualCommitted
+  ] = useState(null);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(
+        "pds_committed_manual_design"
+      );
+      if (!raw) return;
+      const committed = JSON.parse(raw);
+      if (committed?.model && committed?.design) {
+        setManualCommitted(committed);
+        setModel(committed.model);
+      }
+    } catch (_) {
+      // Ignore stale/local malformed state.
+    }
+  }, []);
+
   useEffect(() => {
     if (!runningAction) {
       setElapsed(0);
@@ -997,13 +1018,67 @@ export default function Home() {
     }
   }
 
+  function openManualSvd() {
+    if (!model) {
+      setStatus("Load or calibrate a model first");
+      return;
+    }
+
+    const numericVars =
+      numericDesignVariables(model);
+
+    const manualModel = {
+      ...model,
+      variables:(model.variables || []).filter(
+        v =>
+          !isNumericDesignVariable(v)
+          || designVariableEnabled[v.name] !== false
+      )
+    };
+
+    if (numericVars.length && !manualModel.variables.some(isNumericDesignVariable)) {
+      setStatus("Select at least one design variable for manual SVD exploration");
+      return;
+    }
+
+    localStorage.setItem(
+      "pds_manual_model",
+      JSON.stringify(manualModel)
+    );
+    localStorage.setItem(
+      "pds_design_variable_enabled",
+      JSON.stringify(designVariableEnabled)
+    );
+    window.location.href = "/manual-svd";
+  }
+
   async function runCompare() {
     try {
       setCmp(
         await call(
           "/api/compare",
           {
-            method:"POST"
+            method:"POST",
+            headers:{
+              "Content-Type":"application/json"
+            },
+            body:JSON.stringify(
+              manualCommitted
+              ? {
+                  model:manualCommitted.model,
+                  baseline_architecture_id:
+                    manualCommitted.baseline_architecture_id
+                    || manualCommitted.architecture_id,
+                  future_architecture_id:
+                    manualCommitted.architecture_id,
+                  future_design:
+                    manualCommitted.design,
+                  replications:20,
+                  cases:1200,
+                  seed:2
+                }
+              : { model:model || undefined }
+            )
           },
           "Comparing AS-IS vs TO-BE"
         )
@@ -1808,6 +1883,18 @@ export default function Home() {
               === "Running robust optimization"
               ? "Optimization running..."
               : "Optimize architecture families"}
+          </button>
+
+          <button
+            disabled={busy || !model}
+            style={{
+              ...buttonStyle,
+              opacity:
+                busy || !model ? 0.55 : 1
+            }}
+            onClick={openManualSvd}
+          >
+            Manual SVD Explorer
           </button>
 
           <button
@@ -2667,6 +2754,52 @@ export default function Home() {
               design variables.
             </div>
           }
+        </section>
+      }
+
+      {manualCommitted &&
+        <section style={{
+          ...card,
+          marginTop:18,
+          border:"1px solid #86efac",
+          background:"#f0fdf4"
+        }}>
+          <div style={{
+            display:"flex",
+            justifyContent:"space-between",
+            gap:12,
+            flexWrap:"wrap",
+            alignItems:"center"
+          }}>
+            <div>
+              <h2 style={{margin:"0 0 4px"}}>
+                Committed manual design
+              </h2>
+              <div style={{fontSize:13,color:"#166534"}}>
+                This design was committed from the Manual SVD Explorer and
+                is now the TO-BE design used by Compare AS-IS vs TO-BE.
+              </div>
+            </div>
+            <button
+              style={buttonStyle}
+              onClick={openManualSvd}
+            >
+              Continue manual exploration
+            </button>
+          </div>
+
+          <div style={{
+            marginTop:10,
+            fontSize:13,
+            color:"#374151",
+            lineHeight:1.6
+          }}>
+            Architecture: <b>{manualCommitted.architecture_id}</b> · {
+              Object.entries(manualCommitted.design || {})
+                .map(([k,v]) => `${k}=${Number(v).toFixed(3)}`)
+                .join(" · ")
+            }
+          </div>
         </section>
       }
 
