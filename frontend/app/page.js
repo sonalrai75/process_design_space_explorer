@@ -125,7 +125,85 @@ function activeTransitions(model) {
     : [];
 }
 
-function ProcessGraph({model}) {
+function applyDesignToModel(model, architectureId, design) {
+  if (!model) return null;
+
+  const next = JSON.parse(JSON.stringify(model));
+  const d = design || {};
+
+  const archVar = (next.variables || []).find(v => v.name === "architecture");
+  if (archVar && architectureId) {
+    archVar.value = architectureId;
+  }
+
+  const resourceKey = Object.keys(next).find(
+    k => Array.isArray(next[k])
+      && next[k].length
+      && typeof next[k][0] === "object"
+      && next[k][0] !== null
+      && Object.prototype.hasOwnProperty.call(next[k][0], "capacity")
+      && k !== "variables"
+  );
+
+  if (resourceKey) {
+    next[resourceKey] = next[resourceKey].map(r => {
+      const key = `resource_capacity__${r.id}`;
+      return Object.prototype.hasOwnProperty.call(d, key)
+        ? {...r, capacity:Number(d[key])}
+        : r;
+    });
+  }
+
+  next.architectures = (next.architectures || []).map(a => {
+    if (architectureId && a.id !== architectureId) return a;
+    return {
+      ...a,
+      transitions:(a.transitions || []).map(t => {
+        const key = `routing_probability__${t.source}__${t.target}`;
+        return Object.prototype.hasOwnProperty.call(d, key)
+          ? {...t, probability:Number(d[key])}
+          : t;
+      })
+    };
+  });
+
+  return next;
+}
+
+function designChangeLines(model, design) {
+  if (!model || !design) return [];
+  const lines = [];
+
+  Object.entries(design).forEach(([name,value]) => {
+    if (name.startsWith("resource_capacity__")) {
+      const id = name.replace("resource_capacity__", "");
+      const resource = (model.resources || []).find(r => r.id === id);
+      const before = resource?.capacity;
+      if (before !== undefined && Number(before) !== Number(value)) {
+        lines.push(`${resource?.name || id}: ${Number(before).toFixed(0)} → ${Number(value).toFixed(0)}`);
+      }
+    } else if (name.startsWith("routing_probability__")) {
+      const rest = name.replace("routing_probability__", "");
+      const parts = rest.split("__");
+      const source = parts[0];
+      const target = parts.slice(1).join("__");
+      const t = activeTransitions(model).find(x => x.source === source && x.target === target);
+      const before = t?.probability;
+      if (before !== undefined && Math.abs(Number(before)-Number(value)) > 1e-9) {
+        lines.push(`${source} → ${target}: ${fmtPct(before)} → ${fmtPct(value)}`);
+      }
+    } else if (name === "automation_level") {
+      const v = (model.variables || []).find(x => x.name === name);
+      if (v && Math.abs(Number(v.value)-Number(value)) > 1e-9) {
+        lines.push(`Automation: ${fmtPct(v.value)} → ${fmtPct(value)}`);
+      }
+    }
+  });
+
+  return lines;
+}
+
+function ProcessGraph({model,onSelectActivity,onSelectTransition,selectedActivityId,selectedTransitionIndex}) {
   const activities =
     Array.isArray(model?.activities)
     ? model.activities
@@ -431,9 +509,11 @@ function ProcessGraph({model}) {
                 ) / 2;
 
             return (
-              <g key={
-                `${t.source}-${t.target}-${i}`
-              }>
+              <g
+                key={`${t.source}-${t.target}-${i}`}
+                onClick={() => onSelectTransition?.(i)}
+                style={{cursor:onSelectTransition ? "pointer" : "default"}}
+              >
                 <path
                   d={edgePath(
                     t.source,
@@ -442,11 +522,13 @@ function ProcessGraph({model}) {
                   )}
                   fill="none"
                   stroke={
-                    backward
-                    ? "#b45309"
-                    : "#64748b"
+                    selectedTransitionIndex === i
+                    ? "#2563eb"
+                    : backward
+                      ? "#b45309"
+                      : "#64748b"
                   }
-                  strokeWidth="2"
+                  strokeWidth={selectedTransitionIndex === i ? "4" : "2"}
                   strokeDasharray={
                     backward
                     ? "6 4"
@@ -509,9 +591,9 @@ function ProcessGraph({model}) {
           return (
             <g
               key={a.id}
-              transform={
-                `translate(${p.x},${p.y})`
-              }
+              transform={`translate(${p.x},${p.y})`}
+              onClick={() => onSelectActivity?.(a.id)}
+              style={{cursor:onSelectActivity ? "pointer" : "default"}}
             >
               <rect
                 width={nodeW}
@@ -532,9 +614,11 @@ function ProcessGraph({model}) {
                     : "#cbd5e1"
                 }
                 strokeWidth={
-                  isStart || isEnd
-                  ? "2"
-                  : "1.5"
+                  selectedActivityId === a.id
+                  ? "4"
+                  : isStart || isEnd
+                    ? "2"
+                    : "1.5"
                 }
               />
 
@@ -610,6 +694,67 @@ function ProcessGraph({model}) {
         Solid arrows show forward routing. Dashed amber arrows
         indicate same-level/backward routing such as rework loops.
         Edge labels are routing probabilities.
+      </div>
+    </div>
+  );
+}
+
+function DesignSpaceChart({results,target=0.90}) {
+  const points = [];
+
+  (results || []).forEach(r => {
+    const frontier = r?.robust_frontier?.frontier || [];
+    frontier.forEach(p => points.push({
+      architecture:r.architecture,
+      cost:Number(p.cost),
+      robustness:Number(p.robustness_probability),
+      targetMet:Boolean(p.target_met)
+    }));
+  });
+
+  if (!points.length) return null;
+
+  const width = 760;
+  const height = 300;
+  const pad = {left:72,right:25,top:25,bottom:48};
+  const costs = points.map(p => p.cost);
+  const cmin = Math.min(...costs);
+  const cmax = Math.max(...costs);
+  const span = Math.max(cmax-cmin, 1);
+  const x = c => pad.left + (c-cmin)/span*(width-pad.left-pad.right);
+  const y = r => pad.top + (1-r)*(height-pad.top-pad.bottom);
+
+  return (
+    <div style={{...card,marginTop:16,background:"#fafafa"}}>
+      <div style={{fontWeight:800}}>Design-space frontier</div>
+      <div style={{fontSize:12,color:"#6b7280",marginTop:3}}>
+        Each point is a cost/robustness candidate from the replicated frontier.
+        The dashed line marks the robustness target.
+      </div>
+      <div style={{overflowX:"auto",marginTop:8}}>
+        <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
+          <line x1={pad.left} y1={pad.top} x2={pad.left} y2={height-pad.bottom} stroke="#94a3b8" />
+          <line x1={pad.left} y1={height-pad.bottom} x2={width-pad.right} y2={height-pad.bottom} stroke="#94a3b8" />
+          <line x1={pad.left} y1={y(target)} x2={width-pad.right} y2={y(target)} stroke="#b45309" strokeDasharray="6 5" />
+          <text x={width-pad.right} y={y(target)-5} textAnchor="end" fontSize="11" fill="#92400e">{fmtPct(target)} target</text>
+          {[0.5,0.75,0.9,1.0].map(v => (
+            <g key={v}>
+              <line x1={pad.left-5} y1={y(v)} x2={pad.left} y2={y(v)} stroke="#94a3b8"/>
+              <text x={pad.left-9} y={y(v)+4} textAnchor="end" fontSize="10" fill="#64748b">{fmtPct(v)}</text>
+            </g>
+          ))}
+          {points.map((p,i) => (
+            <g key={`${p.architecture}-${i}`}>
+              <circle cx={x(p.cost)} cy={y(p.robustness)} r={p.targetMet ? 6 : 4.5} fill={p.targetMet ? "#16a34a" : "#64748b"}>
+                <title>{`${p.architecture}: ${money(p.cost)}, ${fmtPct(p.robustness)}`}</title>
+              </circle>
+            </g>
+          ))}
+          <text x={(pad.left+width-pad.right)/2} y={height-10} textAnchor="middle" fontSize="11" fill="#475569">Annual cost</text>
+          <text transform={`translate(16 ${(pad.top+height-pad.bottom)/2}) rotate(-90)`} textAnchor="middle" fontSize="11" fill="#475569">Replicated feasibility</text>
+          <text x={pad.left} y={height-pad.bottom+18} fontSize="10" fill="#64748b">{money(cmin)}</text>
+          <text x={width-pad.right} y={height-pad.bottom+18} textAnchor="end" fontSize="10" fill="#64748b">{money(cmax)}</text>
+        </svg>
       </div>
     </div>
   );
@@ -792,6 +937,9 @@ export default function Home() {
     calibration,
     setCalibration
   ] = useState(null);
+
+  const [selectedActivityId,setSelectedActivityId] = useState(null);
+  const [selectedTransitionIndex,setSelectedTransitionIndex] = useState(null);
 
   useEffect(() => {
     if (!runningAction) {
@@ -2063,6 +2211,30 @@ export default function Home() {
               model now contains generic resource pools and capacity design
               variables and is used directly by Simulation and Optimization.
             </div>
+
+            {Array.isArray(calibration.top_variants) && calibration.top_variants.length > 0 &&
+              <div style={{marginTop:18}}>
+                <div style={{fontWeight:800,marginBottom:8}}>Top process variants</div>
+                <div style={{overflowX:"auto"}}>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                    <thead><tr><th align="left">#</th><th align="left">Path</th><th align="right">Cases</th><th align="right">Share</th><th align="right">Mean cycle</th><th align="right">P95 cycle</th><th align="left">Rework</th></tr></thead>
+                    <tbody>
+                      {calibration.top_variants.slice(0,8).map(v =>
+                        <tr key={v.rank}>
+                          <td style={{padding:"6px 4px"}}>{v.rank}</td>
+                          <td style={{padding:"6px 4px",minWidth:280}}>{v.path}</td>
+                          <td align="right">{v.cases}</td>
+                          <td align="right">{fmtPct(v.share)}</td>
+                          <td align="right">{Number(v.mean_cycle_minutes).toFixed(1)} min</td>
+                          <td align="right">{Number(v.p95_cycle_minutes).toFixed(1)} min</td>
+                          <td style={{paddingLeft:8,fontWeight:v.has_rework ? 700 : 400,color:v.has_rework ? "#92400e" : "#475569"}}>{v.has_rework ? "Yes" : "No"}</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            }
           </div>
         }
       </section>
@@ -2132,8 +2304,75 @@ export default function Home() {
           }}>
             <ProcessGraph
               model={model}
+              selectedActivityId={selectedActivityId}
+              selectedTransitionIndex={selectedTransitionIndex}
+              onSelectActivity={id => {
+                setSelectedActivityId(id);
+                setSelectedTransitionIndex(null);
+              }}
+              onSelectTransition={i => {
+                setSelectedTransitionIndex(i);
+                setSelectedActivityId(null);
+              }}
             />
           </div>
+
+          {(selectedActivityId || selectedTransitionIndex !== null) &&
+            <div style={{...card,marginTop:12,background:"#f8fafc"}}>
+              {selectedActivityId && (() => {
+                const a = (model.activities || []).find(x => x.id === selectedActivityId);
+                if (!a) return null;
+                return (
+                  <>
+                    <div style={{fontWeight:800,marginBottom:10}}>Selected activity</div>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:10}}>
+                      <label style={{fontSize:12}}>Name
+                        <input value={a.name} onChange={e => updateActivity(a.id,"name",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}/>
+                      </label>
+                      <label style={{fontSize:12}}>Mean service (min)
+                        <input type="number" min="0.01" step="0.1" value={a.service_time?.mean_minutes ?? 0} onChange={e => updateActivity(a.id,"mean_minutes",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}/>
+                      </label>
+                      <label style={{fontSize:12}}>Resource pool
+                        <select value={a.resource_pool || ""} onChange={e => updateActivity(a.id,"resource_pool",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}>
+                          <option value="">No resource pool</option>
+                          {resourceOptions(model).map(r => <option key={r} value={r}>{r}</option>)}
+                        </select>
+                      </label>
+                    </div>
+                  </>
+                );
+              })()}
+              {selectedTransitionIndex !== null && (() => {
+                const t = activeTransitions(model)[selectedTransitionIndex];
+                if (!t) return null;
+                const backward = (() => {
+                  const acts = (model.activities || []).map(a => a.id);
+                  return acts.indexOf(t.target) <= acts.indexOf(t.source);
+                })();
+                return (
+                  <>
+                    <div style={{fontWeight:800,marginBottom:10}}>Selected transition {backward ? "· rework/return path" : ""}</div>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:10}}>
+                      <label style={{fontSize:12}}>From
+                        <select value={t.source} onChange={e => updateTransition(selectedTransitionIndex,"source",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}>
+                          {(model.activities || []).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                        </select>
+                      </label>
+                      <label style={{fontSize:12}}>To
+                        <select value={t.target} onChange={e => updateTransition(selectedTransitionIndex,"target",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}>
+                          {(model.activities || []).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                        </select>
+                      </label>
+                      <label style={{fontSize:12}}>Routing probability
+                        <input type="number" min="0" max="1" step="0.01" value={t.probability} onChange={e => updateTransition(selectedTransitionIndex,"probability",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}/>
+                      </label>
+                    </div>
+                    <button style={{...buttonStyle,marginTop:10}} onClick={() => {removeTransition(selectedTransitionIndex); setSelectedTransitionIndex(null);}}>Delete transition</button>
+                  </>
+                );
+              })()}
+            </div>
+          }
 
           <h3>
             Activities
@@ -2679,10 +2918,18 @@ export default function Home() {
                       ? ` Final replicated feasibility ${fmtPct(rob.probability)}.`
                       : ""}
                   </div>
+
+                  {best?.design && designChangeLines(model,best.design).length > 0 &&
+                    <div style={{marginTop:10,fontSize:12,color:"#334155"}}>
+                      <b>Why this design:</b> {designChangeLines(model,best.design).slice(0,6).join(" · ")}
+                    </div>
+                  }
                 </div>
               );
             })()
           }
+
+          <DesignSpaceChart results={opt.results} target={0.90} />
 
           {opt.results.map(
             (r,idx) => {
@@ -3144,6 +3391,19 @@ export default function Home() {
               </>
             }
           </div>
+
+          {model && opt?.results?.[0]?.best &&
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(420px,1fr))",gap:14,marginBottom:16}}>
+              <div>
+                <div style={{fontWeight:800,marginBottom:6}}>AS-IS workflow</div>
+                <ProcessGraph model={model} />
+              </div>
+              <div>
+                <div style={{fontWeight:800,marginBottom:6}}>Selected TO-BE workflow</div>
+                <ProcessGraph model={applyDesignToModel(model,cmp.future_architecture,opt.results[0].best.design)} />
+              </div>
+            </div>
+          }
 
           <div style={{
             overflowX:"auto"

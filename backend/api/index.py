@@ -20,7 +20,7 @@ from .core.optimization import (
 
 app = FastAPI(
     title="Process Design Space Platform API",
-    version="0.12.1",
+    version="0.13.0",
 )
 
 app.add_middleware(
@@ -102,7 +102,7 @@ class CompareRequest(BaseModel):
 def health():
     return {
         "ok": True,
-        "version": "0.12.1",
+        "version": "0.13.0",
     }
 
 

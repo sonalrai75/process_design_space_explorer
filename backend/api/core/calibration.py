@@ -376,6 +376,40 @@ def calibrate_event_log(
     top_variant_count = variant_counts.most_common(1)[0][1] if variant_counts else 0
     case_count = int(work["case_id"].nunique())
 
+    # Process-variant analytics.  Keep the top variants compact enough for the
+    # browser while preserving the exact observed activity sequence.
+    cycle_by_case = {}
+    for case_id, g in work.groupby("case_id", sort=False):
+        start = g["start"].min()
+        if end_col:
+            finish = g["end"].max()
+            if pd.isna(finish):
+                finish = g["start"].max()
+        else:
+            finish = g["start"].max()
+        cycle_by_case[str(case_id)] = float((finish - start).total_seconds() / 60.0)
+
+    variant_cases: dict[tuple[str, ...], list[str]] = defaultdict(list)
+    for case_id, g in work.groupby("case_id", sort=False):
+        seq = tuple(g["activity"].astype(str).tolist())
+        variant_cases[seq].append(str(case_id))
+
+    top_variants = []
+    for rank, (seq, count) in enumerate(variant_counts.most_common(12), start=1):
+        ids = variant_cases.get(seq, [])
+        cvals = [cycle_by_case[cid] for cid in ids if cid in cycle_by_case]
+        repeated = len(set(seq)) < len(seq)
+        top_variants.append({
+            "rank": rank,
+            "activities": list(seq),
+            "path": " → ".join(seq),
+            "cases": int(count),
+            "share": float(count / max(case_count, 1)),
+            "mean_cycle_minutes": float(np.mean(cvals)) if cvals else 0.0,
+            "p95_cycle_minutes": float(np.percentile(cvals, 95)) if cvals else 0.0,
+            "has_rework": bool(repeated),
+        })
+
     resource_summary = []
     for r in resources:
         resource_summary.append({
@@ -406,6 +440,7 @@ def calibrate_event_log(
             "terminal_activity": "Process End",
             "estimated_resource_capacities": resource_capacity,
             "resources": resource_summary,
+            "top_variants": top_variants,
             "service_times": stats[[
                 "activity", "events", "mean_service_minutes", "median_service_minutes", "std_service_minutes"
             ]].replace({np.nan: None}).to_dict(orient="records"),
