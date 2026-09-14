@@ -8,49 +8,34 @@ import numpy as np
 from .model import ProcessModel, ServiceTime, ResourcePool
 
 
-def _rng_service_minutes(
-    rng: np.random.Generator,
-    distribution: str,
-    mean: float,
-    std: float,
-    *,
-    minimum=None,
-    mode=None,
-    maximum=None,
-    samples=None,
-) -> float:
-    mean = max(float(mean), 0.01)
-    std = max(float(std), 0.0)
+def _rng_service_minutes(rng: np.random.Generator, service_time: ServiceTime, multiplier: float = 1.0) -> float:
+    multiplier = max(float(multiplier), 0.0)
+    distribution = service_time.distribution
+    mean = max(float(service_time.mean_minutes) * multiplier, 0.01)
+    std = max(float(service_time.std_minutes) * multiplier, 0.0)
 
-    if distribution == "unresolved":
-        raise ValueError(
-            "Activity has unresolved service-time data. Mark it terminal, "
-            "define a triangular/fixed distribution, enter manual samples, "
-            "or borrow another activity distribution before simulation."
-        )
-    if distribution == "constant":
+    if distribution == 'empirical':
+        samples = [float(x) * multiplier for x in (service_time.samples_minutes or []) if np.isfinite(x) and float(x) > 0]
+        if samples:
+            return max(0.01, float(rng.choice(np.asarray(samples, dtype=float))))
         return mean
-    if distribution == "triangular":
-        lo = float(minimum if minimum is not None else mean)
-        md = float(mode if mode is not None else mean)
-        hi = float(maximum if maximum is not None else mean)
-        if not (0 <= lo <= md <= hi):
-            raise ValueError(
-                f"Invalid triangular parameters: require 0 <= minimum <= mode <= maximum, "
-                f"got {lo}, {md}, {hi}"
-            )
-        return max(0.01, float(rng.triangular(lo, md, hi)))
-    if distribution == "empirical":
-        vals = [float(x) for x in (samples or []) if float(x) > 0]
-        if not vals:
-            raise ValueError("Empirical service-time model has no positive samples.")
-        return max(0.01, float(rng.choice(vals)))
-    if distribution == "normal":
+
+    if distribution == 'triangular':
+        lo, mode, hi = service_time.min_minutes, service_time.mode_minutes, service_time.max_minutes
+        if lo is not None and mode is not None and hi is not None:
+            lo = max(0.01, float(lo) * multiplier)
+            mode = max(lo, float(mode) * multiplier)
+            hi = max(mode, float(hi) * multiplier)
+            if hi > lo:
+                return max(0.01, float(rng.triangular(lo, mode, hi)))
+        return mean
+
+    if distribution == 'constant' or std == 0:
+        return mean
+    if distribution == 'normal':
         return max(0.01, float(rng.normal(mean, std)))
-    if distribution == "exponential":
+    if distribution == 'exponential':
         return max(0.01, float(rng.exponential(mean)))
-    if std == 0:
-        return mean
 
     variance = std * std
     sigma2 = math.log(1.0 + variance / (mean * mean))
@@ -58,48 +43,6 @@ def _rng_service_minutes(
     mu = math.log(mean) - 0.5 * sigma2
     return max(0.01, float(rng.lognormal(mu, sigma)))
 
-
-def _activity_service_minutes(
-    rng: np.random.Generator,
-    model: ProcessModel,
-    activity_id: str,
-    service_multiplier: float,
-    stack=None,
-) -> float:
-    stack = set(stack or [])
-    if activity_id in stack:
-        raise ValueError(f"Borrowed service-time cycle detected at activity '{activity_id}'.")
-    stack.add(activity_id)
-
-    act = model.activity_map()[activity_id]
-    if getattr(act, "terminal", False):
-        return 0.01
-
-    st = act.service_time
-    if st.distribution == "borrowed":
-        source = st.source_activity_id
-        if not source or source not in model.activity_map():
-            raise ValueError(
-                f"Activity '{act.name}' borrows a distribution but no valid source activity is selected."
-            )
-        return max(
-            0.01,
-            float(st.scale or 1.0)
-            * _activity_service_minutes(
-                rng, model, source, service_multiplier, stack
-            ),
-        )
-
-    return _rng_service_minutes(
-        rng,
-        st.distribution,
-        st.mean_minutes * service_multiplier,
-        st.std_minutes * service_multiplier,
-        minimum=None if st.minimum_minutes is None else st.minimum_minutes * service_multiplier,
-        mode=None if st.mode_minutes is None else st.mode_minutes * service_multiplier,
-        maximum=None if st.maximum_minutes is None else st.maximum_minutes * service_multiplier,
-        samples=None if not st.samples_minutes else [x * service_multiplier for x in st.samples_minutes],
-    )
 
 def _capacity_variable_name(resource_id: str) -> str:
     return f'resource_capacity__{resource_id}'
@@ -281,97 +224,6 @@ def _eligible_resource_ids(model: ProcessModel, activity, capacities: dict[str, 
     return candidates
 
 
-def _agent_slots(model: ProcessModel, capacities: dict[str, int]):
-    # Returns explicit/synthetic one-server slots grouped by pool. Existing
-    # individual agents are preserved; additional design capacity receives
-    # anonymous slots carrying the pool's aggregate skill set.
-    grouped = defaultdict(list)
-    for agent in model.agents:
-        if agent.active and agent.resource_pool in capacities:
-            grouped[agent.resource_pool].append(agent)
-
-    slots = {}
-    for rid, cap in capacities.items():
-        pool = model.resource_map().get(rid)
-        if pool is None:
-            continue
-        listed = sorted(grouped.get(rid, []), key=lambda a: a.id)
-        target = _max_staffing_capacity(model, pool, int(cap))
-        rows = []
-        for idx, agent in enumerate(listed):
-            rows.append({
-                'id': agent.id,
-                'name': agent.name or agent.id,
-                'pool': rid,
-                'slot_idx': idx,
-                'skills': set(agent.skills or []),
-                'proficiency': dict(agent.skill_proficiency or {}),
-                'synthetic': bool(agent.synthetic),
-            })
-        for idx in range(len(rows), target):
-            rows.append({
-                'id': f'{rid}__design_slot_{idx+1:02d}',
-                'name': f'{pool.name} design slot {idx+1}',
-                'pool': rid,
-                'slot_idx': idx,
-                'skills': set(pool.skills or []),
-                'proficiency': {skill: 1.0 for skill in (pool.skills or [])},
-                'synthetic': True,
-            })
-        slots[rid] = rows
-    return slots
-
-
-def _next_active_time_for_agent(model: ProcessModel, pool: ResourcePool, slot_idx: int, earliest: float, designed_capacity: int) -> float:
-    return _next_active_time_for_slot(model, pool, slot_idx, earliest, designed_capacity)
-
-
-def _eligible_agent_slots(model: ProcessModel, activity, capacities: dict[str, int], slots_by_pool: dict):
-    required = set(activity.required_skills or [])
-    explicit_pools = set(activity.eligible_resource_pools or [])
-    candidates = []
-    for rid, rows in slots_by_pool.items():
-        # When required skills exist, individual skills are authoritative and
-        # explicit pool eligibility is treated as derived metadata. Without a
-        # skill requirement, preserve the configured pool restriction.
-        if not required:
-            if explicit_pools and rid not in explicit_pools:
-                continue
-            if not explicit_pools and activity.resource_pool and rid != activity.resource_pool:
-                continue
-        for row in rows:
-            if required and not required.issubset(row['skills']):
-                continue
-            candidates.append(row)
-    return candidates
-
-
-def _agent_proficiency_multiplier(activity, slot: dict) -> float:
-    required = list(activity.required_skills or [])
-    if not required:
-        return 1.0
-    profs = [float(slot['proficiency'].get(skill, 1.0)) for skill in required]
-    # Proficiency=1 is baseline. Lower proficiency lengthens service time.
-    p = min(profs) if profs else 1.0
-    p = min(1.0, max(0.25, p))
-    return 1.0 / p
-
-
-def _integrated_agent_minutes(model: ProcessModel, pool: ResourcePool, slot_idx: int, designed_capacity: int, start: float, end: float) -> float:
-    if end <= start:
-        return 0.0
-    if not pool.staffing_profile:
-        return (end - start) if slot_idx < max(0, designed_capacity) else 0.0
-    total = 0.0
-    cur = start
-    while cur < end - 1e-9:
-        boundary = min(end, _next_staffing_boundary(model, pool, cur))
-        if slot_idx < _scaled_staffing_capacity(model, pool, cur, designed_capacity):
-            total += max(0.0, boundary - cur)
-        cur = boundary + 1e-9
-    return total
-
-
 def _pool_service_start(model: ProcessModel, pool: ResourcePool, server_free: dict, rid: str, earliest: float, designed_capacity: int):
     best = (float('inf'), None)
     for idx, free_at in enumerate(server_free[rid]):
@@ -395,35 +247,181 @@ def _integrated_staff_minutes(model: ProcessModel, pool: ResourcePool, designed_
     return total
 
 
-def simulate(model: ProcessModel, architecture_id: str, design: dict[str, float] | None = None, cases: int = 1500, seed: int = 7, emit_log: bool = True, warmup_fraction: float = 0.25) -> dict:
+def _cell_maps(model: ProcessModel):
+    by_id = {c.id: c for c in model.cells}
+    allocations: dict[tuple[str, str], int] = {}
+    resource_cells: dict[str, list[str]] = defaultdict(list)
+    for cell in model.cells:
+        ids = set(cell.resource_ids or []) | set((cell.resource_capacities or {}).keys())
+        for rid in ids:
+            explicit = (cell.resource_capacities or {}).get(rid)
+            if explicit is None:
+                pool = model.resource_map().get(rid)
+                explicit = int(pool.capacity) if pool is not None else 0
+            cap = max(0, int(explicit))
+            if cap <= 0:
+                continue
+            allocations[(cell.id, rid)] = cap
+            resource_cells[rid].append(cell.id)
+    return by_id, allocations, resource_cells
+
+
+def _cell_active_capacities(
+    model: ProcessModel,
+    pool: ResourcePool,
+    t: float,
+    designed_capacity: int,
+    allocations: dict[tuple[str, str], int],
+) -> dict[str, int]:
+    pairs = [(cid, cap) for (cid, rid), cap in allocations.items() if rid == pool.id and cap > 0]
+    if not pairs:
+        return {}
+    total_alloc = sum(cap for _, cap in pairs)
+    active_total = min(total_alloc, _scaled_staffing_capacity(model, pool, t, designed_capacity))
+    if active_total <= 0:
+        return {cid: 0 for cid, _ in pairs}
+    raw = {cid: active_total * cap / total_alloc for cid, cap in pairs}
+    assigned = {cid: min(cap, int(math.floor(raw[cid]))) for cid, cap in pairs}
+    remaining = active_total - sum(assigned.values())
+    order = sorted(
+        pairs,
+        key=lambda pair: (-(raw[pair[0]] - math.floor(raw[pair[0]])), pair[0]),
+    )
+    while remaining > 0:
+        changed = False
+        for cid, cap in order:
+            if remaining <= 0:
+                break
+            if assigned[cid] < cap:
+                assigned[cid] += 1
+                remaining -= 1
+                changed = True
+        if not changed:
+            break
+    return assigned
+
+
+def _next_active_time_for_cell_slot(
+    model: ProcessModel,
+    pool: ResourcePool,
+    cell_id: str,
+    slot_idx: int,
+    earliest: float,
+    designed_capacity: int,
+    allocations: dict[tuple[str, str], int],
+) -> float:
+    cur = max(float(earliest), 0.0)
+    for _ in range(10000):
+        active = _cell_active_capacities(model, pool, cur, designed_capacity, allocations).get(cell_id, 0)
+        if slot_idx < active:
+            return cur
+        boundary = _next_staffing_boundary(model, pool, cur)
+        if not np.isfinite(boundary):
+            return float('inf')
+        cur = boundary + 1e-9
+    return float('inf')
+
+
+def _cell_pool_service_start(
+    model: ProcessModel,
+    pool: ResourcePool,
+    cell_id: str,
+    server_free: dict,
+    earliest: float,
+    designed_capacity: int,
+    allocations: dict[tuple[str, str], int],
+):
+    key = (cell_id, pool.id)
+    best = (float('inf'), None)
+    for idx, free_at in enumerate(server_free.get(key, [])):
+        candidate = _next_active_time_for_cell_slot(
+            model, pool, cell_id, idx, max(earliest, free_at), designed_capacity, allocations
+        )
+        if candidate < best[0]:
+            best = (candidate, idx)
+    return best
+
+
+def _work_type_choice(rng: np.random.Generator, model: ProcessModel):
+    if not model.work_types:
+        return 'default', None
+    weights = np.asarray([max(0.0, float(w.probability)) for w in model.work_types], dtype=float)
+    if weights.sum() <= 0:
+        weights = np.ones(len(model.work_types), dtype=float)
+    weights = weights / weights.sum()
+    wt = model.work_types[int(rng.choice(len(model.work_types), p=weights))]
+    preferred = wt.preferred_cell_id
+    if not preferred:
+        for cell in model.cells:
+            if wt.id in (cell.preferred_work_types or []):
+                preferred = cell.id
+                break
+    return wt.id, preferred
+
+
+def _cellular_eligible_resources(
+    model: ProcessModel,
+    activity,
+    capacities: dict[str, int],
+    operating_mode: str,
+    preferred_cell_id: str | None,
+    cell_by_id: dict,
+    allocations: dict[tuple[str, str], int],
+) -> list[str]:
+    eligible = _eligible_resource_ids(model, activity, capacities)
+    if operating_mode == 'global':
+        return eligible
+    if operating_mode != 'cellular_no_overflow':
+        raise ValueError(f'Unsupported operating mode in Phase 1: {operating_mode}')
+    if not preferred_cell_id:
+        raise ValueError('Cellular/no-overflow requires every work type to have a preferred cell.')
+    cell = cell_by_id.get(preferred_cell_id)
+    if cell is None:
+        raise ValueError(f'Unknown preferred cell: {preferred_cell_id}')
+    if activity.resource_pool or activity.required_skills or activity.eligible_resource_pools:
+        if activity.id not in set(cell.activity_ids or []):
+            raise RuntimeError(
+                f'Activity {activity.id} is not assigned to preferred cell {cell.name} ({cell.id}).'
+            )
+    local_resources = {rid for (cid, rid), cap in allocations.items() if cid == cell.id and cap > 0}
+    return [rid for rid in eligible if rid in local_resources]
+
+
+def simulate(model: ProcessModel, architecture_id: str, design: dict[str, float] | None = None, cases: int = 1500, seed: int = 7, emit_log: bool = True, warmup_fraction: float = 0.25, operating_mode: str = 'global', scheduling_policy: str = 'fcfs') -> dict:
     design = design or {}
     cfg, capacities = apply_design(model, architecture_id, design)
     rng = np.random.default_rng(seed)
     amap = model.activity_map()
     rmap = model.resource_map()
+    if scheduling_policy.lower() not in ('fcfs', 'fifo'):
+        raise ValueError('Phase 1 supports FCFS/FIFO scheduling only.')
+    cell_by_id, cell_allocations, resource_cells = _cell_maps(model)
+    if operating_mode == 'cellular_no_overflow' and not model.cells:
+        raise ValueError('Define at least one cell before running cellular/no-overflow.')
 
     by_source = defaultdict(list)
     for t in cfg['transitions']:
         by_source[t.source].append(t)
 
-    use_individual_agents = bool(model.agents)
-    slots_by_pool = _agent_slots(model, capacities) if use_individual_agents else {}
-    agent_free = {
-        row['id']: 0.0
-        for rows in slots_by_pool.values()
-        for row in rows
-    }
-    server_free = {
-        rid: [0.0 for _ in range(_max_staffing_capacity(model, rmap[rid], int(cap)))]
-        for rid, cap in capacities.items()
-        if rid in rmap
-    }
+    if operating_mode == 'cellular_no_overflow':
+        server_free = {
+            (cid, rid): [0.0 for _ in range(int(alloc))]
+            for (cid, rid), alloc in cell_allocations.items()
+            if rid in rmap and alloc > 0
+        }
+    else:
+        server_free = {
+            rid: [0.0 for _ in range(_max_staffing_capacity(model, rmap[rid], int(cap)))]
+            for rid, cap in capacities.items()
+            if rid in rmap
+        }
 
     arrivals, completions, cycles, events = [], [], [], []
     activity_busy = defaultdict(float)
     activity_count = defaultdict(int)
     resource_service_intervals = []
-    agent_service_intervals = []
+    wait_intervals = []
+    case_work_types = []
 
     now_arrival = 0.0
     base_dt = datetime(2026, 1, 5, 0, 0, tzinfo=timezone.utc)
@@ -433,6 +431,8 @@ def simulate(model: ProcessModel, architecture_id: str, design: dict[str, float]
             now_arrival = _next_arrival_time(rng, model, now_arrival)
 
         case_id = f'C{case_idx+1:06d}'
+        work_type_id, preferred_cell_id = _work_type_choice(rng, model)
+        case_work_types.append((case_id, work_type_id, preferred_cell_id))
         t = now_arrival
         first_t = t
         current = model.start_activity
@@ -448,57 +448,49 @@ def simulate(model: ProcessModel, architecture_id: str, design: dict[str, float]
             server_idx = None
             start = t
 
-            selected_agent = None
-            if use_individual_agents:
-                eligible_agents = _eligible_agent_slots(model, act, capacities, slots_by_pool)
-                if eligible_agents:
-                    best = (float('inf'), None)
-                    for row in eligible_agents:
-                        rid = row['pool']
-                        if rid not in rmap:
+            eligible = _cellular_eligible_resources(
+                model, act, capacities, operating_mode, preferred_cell_id,
+                cell_by_id, cell_allocations,
+            )
+            if eligible:
+                best = (float('inf'), None, None)
+                for rid in eligible:
+                    if rid not in rmap:
+                        continue
+                    if operating_mode == 'cellular_no_overflow':
+                        if (preferred_cell_id, rid) not in server_free:
                             continue
-                        candidate = _next_active_time_for_agent(
-                            model,
-                            rmap[rid],
-                            row['slot_idx'],
-                            max(t, agent_free.get(row['id'], 0.0)),
-                            int(capacities[rid]),
+                        candidate, idx = _cell_pool_service_start(
+                            model, rmap[rid], preferred_cell_id, server_free, t,
+                            int(capacities[rid]), cell_allocations,
                         )
-                        tie = 0 if rid == act.resource_pool else 1
-                        current_tie = 0 if best[1] and best[1]['pool'] == act.resource_pool else 1
-                        if (candidate, tie, row['id']) < (best[0], current_tie, best[1]['id'] if best[1] else ''):
-                            best = (candidate, row)
-                    if best[1] is None or not np.isfinite(best[0]):
-                        raise RuntimeError(f'No staffed eligible individual resource is available for activity {act.id}.')
-                    start, selected_agent = best
-                    resource = selected_agent['pool']
-            else:
-                eligible = _eligible_resource_ids(model, act, capacities)
-                if eligible:
-                    best = (float('inf'), None, None)
-                    for rid in eligible:
-                        if rid not in server_free or rid not in rmap:
+                    else:
+                        if rid not in server_free:
                             continue
-                        candidate, idx = _pool_service_start(model, rmap[rid], server_free, rid, t, int(capacities[rid]))
-                        tie = 0 if rid == act.resource_pool else 1
-                        if (candidate, tie) < (best[0], 0 if best[1] == act.resource_pool else 1):
-                            best = (candidate, rid, idx)
-                    if best[1] is None or not np.isfinite(best[0]):
-                        raise RuntimeError(f'No staffed eligible resource is available for activity {act.id}.')
-                    start, resource, server_idx = best
+                        candidate, idx = _pool_service_start(
+                            model, rmap[rid], server_free, rid, t, int(capacities[rid])
+                        )
+                    tie = 0 if rid == act.resource_pool else 1
+                    if (candidate, tie) < (best[0], 0 if best[1] == act.resource_pool else 1):
+                        best = (candidate, rid, idx)
+                if best[1] is None or not np.isfinite(best[0]):
+                    mode_label = 'local ' if operating_mode == 'cellular_no_overflow' else ''
+                    raise RuntimeError(f'No staffed {mode_label}eligible resource is available for activity {act.id}.')
+                start, resource, server_idx = best
+                queue_cell = preferred_cell_id if operating_mode == 'cellular_no_overflow' else 'global'
+                if start > t + 1e-12:
+                    wait_intervals.append((queue_cell or 'unassigned', t, start, first_t))
 
-            svc = _activity_service_minutes(rng, model, current, cfg['service_multiplier'])
-            if selected_agent is not None:
-                svc *= _agent_proficiency_multiplier(act, selected_agent)
+            svc = _rng_service_minutes(rng, act.service_time, cfg['service_multiplier'])
             end = start + svc
 
-            if selected_agent is not None:
-                agent_free[selected_agent['id']] = end
-                resource_service_intervals.append((selected_agent['pool'], start, end))
-                agent_service_intervals.append((selected_agent['id'], selected_agent['pool'], selected_agent['slot_idx'], start, end))
-            elif resource:
-                server_free[resource][server_idx] = end
-                resource_service_intervals.append((resource, start, end))
+            if resource:
+                if operating_mode == 'cellular_no_overflow':
+                    server_free[(preferred_cell_id, resource)][server_idx] = end
+                    resource_service_intervals.append((resource, preferred_cell_id, start, end))
+                else:
+                    server_free[resource][server_idx] = end
+                    resource_service_intervals.append((resource, None, start, end))
 
             activity_busy[current] += svc
             activity_count[current] += 1
@@ -509,8 +501,11 @@ def simulate(model: ProcessModel, architecture_id: str, design: dict[str, float]
                     'activity': current,
                     'start_time': (base_dt + timedelta(minutes=float(start))).isoformat(),
                     'end_time': (base_dt + timedelta(minutes=float(end))).isoformat(),
-                    'resource': selected_agent['id'] if selected_agent is not None else (resource or ''),
-                    'resource_pool': selected_agent['pool'] if selected_agent is not None else (resource or ''),
+                    'resource': resource or '',
+                    'work_type': work_type_id,
+                    'preferred_cell': preferred_cell_id or '',
+                    'processing_cell': (preferred_cell_id or '') if (resource and operating_mode == 'cellular_no_overflow') else '',
+                    'wait_minutes': float(max(0.0, start - t)),
                 })
 
             t = end
@@ -551,10 +546,29 @@ def simulate(model: ProcessModel, architecture_id: str, design: dict[str, float]
     avg_wip = float(np.sum(cohort_cycles) / max(measurement_end - measurement_start, 1e-9))
     sla = float(np.mean(cohort_cycles <= model.sla_minutes)) if len(cohort_cycles) else 0.0
 
+    cohort_wait_minutes = 0.0
+    wait_by_cell = defaultdict(float)
+    cohort_wait_by_cell = defaultdict(float)
+    cohort_wait_count_by_cell = defaultdict(int)
+    for cid, ws, we, case_arrival in wait_intervals:
+        overlap = max(0.0, min(we, measurement_end) - max(ws, measurement_start))
+        if overlap > 0:
+            wait_by_cell[cid] += overlap
+        if case_arrival >= measurement_start:
+            full_wait = max(0.0, we - ws)
+            cohort_wait_minutes += full_wait
+            cohort_wait_by_cell[cid] += full_wait
+            cohort_wait_count_by_cell[cid] += 1
+    measured_case_count = max(int(np.sum(cohort_mask)), 1)
+    mean_wait_minutes = float(cohort_wait_minutes / measured_case_count)
+
     resource_busy = defaultdict(float)
-    for rid, start, end in resource_service_intervals:
+    cell_resource_busy = defaultdict(float)
+    for rid, cid, start, end in resource_service_intervals:
         overlap = max(0.0, min(end, measurement_end) - max(start, measurement_start))
         resource_busy[rid] += overlap
+        if cid:
+            cell_resource_busy[(cid, rid)] += overlap
 
     resource_utilizations = {}
     for rid, designed_capacity in capacities.items():
@@ -564,25 +578,45 @@ def simulate(model: ProcessModel, architecture_id: str, design: dict[str, float]
         staffed = _integrated_staff_minutes(model, pool, int(designed_capacity), measurement_start, measurement_end)
         resource_utilizations[rid] = float(resource_busy[rid] / staffed) if staffed > 0 else 0.0
 
-    agent_busy = defaultdict(float)
-    for aid, rid, slot_idx, start, end in agent_service_intervals:
-        overlap = max(0.0, min(end, measurement_end) - max(start, measurement_start))
-        agent_busy[aid] += overlap
-
-    agent_utilizations = {}
-    if use_individual_agents:
-        for rid, rows in slots_by_pool.items():
-            pool = rmap.get(rid)
-            if pool is None:
-                continue
-            for row in rows:
-                available = _integrated_agent_minutes(
-                    model, pool, row['slot_idx'], int(capacities[rid]), measurement_start, measurement_end
-                )
-                agent_utilizations[row['id']] = float(agent_busy[row['id']] / available) if available > 0 else 0.0
-
     bottleneck = max(resource_utilizations, key=resource_utilizations.get) if resource_utilizations else None
     max_util = float(resource_utilizations[bottleneck]) if bottleneck else 0.0
+
+    cell_stats = {}
+    if operating_mode == 'cellular_no_overflow':
+        for cell in model.cells:
+            busy = sum(cell_resource_busy.get((cell.id, rid), 0.0) for rid in rmap)
+            staffed = 0.0
+            cur = measurement_start
+            while cur < measurement_end - 1e-9:
+                boundaries = [measurement_end]
+                for rid in rmap:
+                    pool = rmap[rid]
+                    if (cell.id, rid) in cell_allocations:
+                        boundaries.append(_next_staffing_boundary(model, pool, cur))
+                boundary = min(x for x in boundaries if np.isfinite(x))
+                span = max(0.0, boundary - cur)
+                for rid, pool in rmap.items():
+                    if (cell.id, rid) not in cell_allocations:
+                        continue
+                    active = _cell_active_capacities(
+                        model, pool, cur, int(capacities[rid]), cell_allocations
+                    ).get(cell.id, 0)
+                    staffed += active * span
+                if boundary >= measurement_end - 1e-9:
+                    break
+                cur = boundary + 1e-9
+            util = float(busy / staffed) if staffed > 0 else 0.0
+            qwait = float(cohort_wait_by_cell.get(cell.id, 0.0))
+            qevents = int(cohort_wait_count_by_cell.get(cell.id, 0))
+            cell_stats[cell.id] = {
+                'name': cell.name,
+                'busy_minutes': float(busy),
+                'staffed_minutes': float(staffed),
+                'utilization': util,
+                'mean_wait_minutes': float(qwait / qevents) if qevents else 0.0,
+                'avg_queue_length': float(qwait / max(measurement_end - measurement_start, 1e-9)),
+            }
+    bottleneck_cell = max(cell_stats, key=lambda c: cell_stats[c]['utilization']) if cell_stats else None
 
     annual_resource_cost = 0.0
     for rid, cap in capacities.items():
@@ -614,6 +648,7 @@ def simulate(model: ProcessModel, architecture_id: str, design: dict[str, float]
             'p95_cycle_minutes': float(np.percentile(cohort_cycles, 95)),
             'sla_attainment': sla,
             'avg_wip': avg_wip,
+            'mean_wait_minutes': mean_wait_minutes,
             'annual_cost': annual_resource_cost,
             'backlog_growth_per_hour': backlog_growth_per_hour,
             'max_resource_utilization': max_util,
@@ -633,24 +668,15 @@ def simulate(model: ProcessModel, architecture_id: str, design: dict[str, float]
             }
             for rid in capacities
         ],
-        'agent_stats': [
-            {
-                'agent': row['id'],
-                'name': row['name'],
-                'resource_pool': rid,
-                'skills': sorted(row['skills']),
-                'busy_minutes': float(agent_busy[row['id']]),
-                'utilization': float(agent_utilizations.get(row['id'], 0.0)),
-                'synthetic': bool(row['synthetic']),
-            }
-            for rid, rows in slots_by_pool.items()
-            for row in rows
-        ] if use_individual_agents else [],
         'activity_stats': [
             {'activity': aid, 'events': int(activity_count[aid]), 'busy_minutes': float(activity_busy[aid])}
             for aid in activity_count
         ],
+        'cell_stats': cell_stats,
         'bottleneck_resource': bottleneck,
+        'bottleneck_cell': bottleneck_cell,
+        'operating_mode': operating_mode,
+        'scheduling_policy': 'fcfs',
     }
 
     if emit_log:

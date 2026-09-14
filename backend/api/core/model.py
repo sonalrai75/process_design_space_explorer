@@ -3,7 +3,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 VariableKind = Literal['fixed', 'continuous', 'quantized', 'discrete']
-DistributionKind = Literal['constant', 'normal', 'lognormal', 'exponential', 'triangular', 'empirical', 'borrowed', 'unresolved']
+DistributionKind = Literal['constant', 'normal', 'lognormal', 'exponential', 'empirical', 'triangular']
 RoutingPolicy = Literal['fixed_pool', 'earliest_available_skill']
 
 
@@ -34,15 +34,17 @@ class ServiceTime(BaseModel):
     distribution: DistributionKind = 'lognormal'
     mean_minutes: float = 30.0
     std_minutes: float = 10.0
-    minimum_minutes: float | None = None
-    mode_minutes: float | None = None
-    maximum_minutes: float | None = None
     samples_minutes: list[float] | None = None
-    source_activity_id: str | None = None
-    scale: float = 1.0
+    min_minutes: float | None = None
+    mode_minutes: float | None = None
+    max_minutes: float | None = None
+    sample_count: int | None = None
+    confidence: Literal['high', 'moderate', 'low', 'insufficient'] | None = None
+    fallback_reason: str | None = None
 
 
 class StaffingInterval(BaseModel):
+    """Capacity available during one interval in a repeating staffing profile."""
     start_minute: float
     end_minute: float
     capacity: int
@@ -50,6 +52,7 @@ class StaffingInterval(BaseModel):
 
 
 class ArrivalInterval(BaseModel):
+    """Piecewise-constant arrival rate during a repeating time profile."""
     start_minute: float
     end_minute: float
     rate_per_hour: float
@@ -62,9 +65,8 @@ class Activity(BaseModel):
     resource_pool: str | None = None
     service_time: ServiceTime = Field(default_factory=ServiceTime)
     cost_per_hour: float = 75.0
-    model_source: str = 'configured'
-    confidence: str = 'defined'
-    terminal: bool = False
+
+    # Skill-based routing is opt-in. Existing models continue to use resource_pool.
     required_skills: list[str] = Field(default_factory=list)
     eligible_resource_pools: list[str] = Field(default_factory=list)
     routing_policy: RoutingPolicy = 'fixed_pool'
@@ -74,33 +76,21 @@ class Transition(BaseModel):
     source: str
     target: str
     probability: float = 1.0
-    # Optional observed evidence retained for on-demand statistical inspection.
-    observed_count: int | None = None
-    handoff_samples_minutes: list[float] | None = None
 
 
 class ResourcePool(BaseModel):
     id: str
     name: str
     capacity: int = 1
-    # Explicit resource cost makes calibrated models independent of demo-specific
-    # activity naming. Existing models that omit it remain backward compatible.
     cost_per_hour: float | None = None
+
+    # Pools can advertise multiple skills; an activity may then choose among all
+    # pools whose skill set covers the activity's required_skills.
     skills: list[str] = Field(default_factory=list)
+
+    # If present, this profile replaces constant staffing for simulation. The
+    # profile repeats every ProcessModel.staffing_profile_repeat_minutes.
     staffing_profile: list[StaffingInterval] = Field(default_factory=list)
-
-
-class ResourceAgent(BaseModel):
-    # Individual resource/agent. The pool remains the staffing/cost envelope,
-    # while the agent carries the skill mix used for skill-based routing.
-    id: str
-    name: str | None = None
-    resource_pool: str
-    skills: list[str] = Field(default_factory=list)
-    skill_proficiency: dict[str, float] = Field(default_factory=dict)
-    cost_per_hour: float | None = None
-    active: bool = True
-    synthetic: bool = False
 
 
 class Architecture(BaseModel):
@@ -108,6 +98,34 @@ class Architecture(BaseModel):
     name: str
     enabled_activities: list[str]
     transitions: list[Transition]
+
+
+
+
+class WorkType(BaseModel):
+    """Transaction/job/product class used by operating-structure experiments."""
+    id: str
+    name: str
+    probability: float = 1.0
+    preferred_cell_id: str | None = None
+
+
+class CellDefinition(BaseModel):
+    """Manual organizational cell definition.
+
+    Activities may appear in more than one cell.  In Phase 1 each resource should
+    belong to at most one cell; the experiment validator enforces that rule.
+    """
+    id: str
+    name: str
+    activity_ids: list[str] = Field(default_factory=list)
+    resource_ids: list[str] = Field(default_factory=list)
+    # Optional per-pool capacity allocation. This lets a resource pool be split
+    # across multiple cells without creating duplicate resource objects.
+    resource_capacities: dict[str, int] = Field(default_factory=dict)
+    preferred_work_types: list[str] = Field(default_factory=list)
+    capacity_limit: int | None = None
+    cross_cell_eligible: bool = False
 
 
 class ProcessModel(BaseModel):
@@ -118,20 +136,27 @@ class ProcessModel(BaseModel):
     end_activity: str
     activities: list[Activity]
     resources: list[ResourcePool]
-    agents: list[ResourceAgent] = Field(default_factory=list)
     architectures: list[Architecture]
     variables: list[DesignVariable]
     arrival_rate_per_hour: float = 6.0
     sla_minutes: float = 480.0
+
+    # Optional piecewise-constant non-stationary arrival process. When empty,
+    # arrival_rate_per_hour is used exactly as before.
     arrival_profile: list[ArrivalInterval] = Field(default_factory=list)
     arrival_profile_repeat_minutes: float = 1440.0
+
+    # Staffing profiles on resource pools repeat over this horizon.
     staffing_profile_repeat_minutes: float = 1440.0
+
+    # Optional organizational structures used by cellularization experiments.
+    # They do not change the process architecture unless a simulation scenario
+    # explicitly selects a cellular operating mode.
+    work_types: list[WorkType] = Field(default_factory=list)
+    cells: list[CellDefinition] = Field(default_factory=list)
 
     def activity_map(self):
         return {a.id: a for a in self.activities}
 
     def resource_map(self):
         return {r.id: r for r in self.resources}
-
-    def agent_map(self):
-        return {a.id: a for a in self.agents}

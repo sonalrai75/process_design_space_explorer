@@ -12,19 +12,18 @@ from .core.model import ProcessModel
 from .core.mining import mine_log, compare_mined_logs
 from .core.simulation import simulate
 from .core.calibration import preview_event_log, calibrate_event_log
-from .core.contact_center_excel import (
-    preview_contact_center_workbook,
-    import_contact_center_workbook,
-)
+from .core.contact_center_excel import preview_contact_center_workbook, import_contact_center_workbook
+from .core.experiments import run_phase1_experiment
 from .core.optimization import (
     Constraint,
     optimize_families,
     calculate_structural_capacity,
 )
+from .core.manual_svd import replicated_manual_svd, apply_manual_mode_step
 
 app = FastAPI(
     title="Process Design Space Platform API",
-    version="0.13.5",
+    version="0.15.0",
 )
 
 app.add_middleware(
@@ -92,6 +91,31 @@ class OptimizationRequest(BaseModel):
     robustness_cases: int = 1200
 
 
+
+
+class ManualSVDRequest(BaseModel):
+    model: ProcessModel = DEMO_MODEL
+    architecture_id: str = "baseline"
+    design: dict[str, float] = {}
+    metrics: list[str] = [
+        "throughput_per_hour",
+        "p95_cycle_minutes",
+        "sla_attainment",
+        "annual_cost",
+        "max_resource_utilization",
+    ]
+    replications: int = 6
+    cases: int = 500
+    seed_start: int = 3100
+
+
+class ManualSVDStepRequest(BaseModel):
+    model: ProcessModel = DEMO_MODEL
+    design: dict[str, float]
+    components: dict[str, float]
+    step_fraction: float = 0.25
+
+
 class CompareRequest(BaseModel):
     model: ProcessModel = DEMO_MODEL
     baseline_architecture_id: str | None = None
@@ -102,11 +126,20 @@ class CompareRequest(BaseModel):
     replications: int = 20
 
 
+class Phase1ExperimentRequest(BaseModel):
+    model: ProcessModel = DEMO_MODEL
+    architecture_id: str = "baseline"
+    design: dict[str, float] = {}
+    cases: int = 1200
+    replications: int = 12
+    seed_start: int = 4200
+
+
 @app.get("/api/health")
 def health():
     return {
         "ok": True,
-        "version": "0.13.5",
+        "version": "0.15.0",
     }
 
 
@@ -139,8 +172,6 @@ def simulate_endpoint(
             "structural_capacity"
         ] = capacity
 
-        # Preserve utilization measured by the simulator for time-varying
-        # staffing and skill-based routing. Fall back to structural capacity.
         out["metrics"].setdefault(
             "max_resource_utilization",
             capacity["max_resource_utilization"],
@@ -175,15 +206,12 @@ def simulate_endpoint(
         )
 
 
-
-
 @app.post("/api/contact-center/preview")
 async def contact_center_preview(file: UploadFile = File(...)):
     try:
         content = await file.read()
         return preview_contact_center_workbook(
-            file.filename or "contact_center.xlsx",
-            content,
+            file.filename or "contact_center.xlsx", content
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -194,8 +222,22 @@ async def contact_center_import(file: UploadFile = File(...)):
     try:
         content = await file.read()
         return import_contact_center_workbook(
-            file.filename or "contact_center.xlsx",
-            content,
+            file.filename or "contact_center.xlsx", content
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/experiments/cellularization/phase1")
+def cellularization_phase1(req: Phase1ExperimentRequest):
+    try:
+        return run_phase1_experiment(
+            req.model,
+            req.architecture_id,
+            design=req.design,
+            cases=req.cases,
+            replications=req.replications,
+            seed_start=req.seed_start,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -357,6 +399,37 @@ def optimize_endpoint(
             status_code=400,
             detail=str(e),
         )
+
+
+
+
+@app.post("/api/manual-svd/analyze")
+def manual_svd_analyze(req: ManualSVDRequest):
+    try:
+        return replicated_manual_svd(
+            req.model,
+            req.architecture_id,
+            design=req.design,
+            metric_names=req.metrics,
+            replications=req.replications,
+            cases=req.cases,
+            seed_start=req.seed_start,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/manual-svd/step")
+def manual_svd_step(req: ManualSVDStepRequest):
+    try:
+        return apply_manual_mode_step(
+            req.model,
+            req.design,
+            req.components,
+            req.step_fraction,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/api/compare")
