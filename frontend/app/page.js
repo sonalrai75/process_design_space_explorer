@@ -203,7 +203,169 @@ function designChangeLines(model, design) {
   return lines;
 }
 
+
+function finiteNumbers(values) {
+  return (Array.isArray(values) ? values : [])
+    .map(Number)
+    .filter(Number.isFinite);
+}
+
+function describeNumbers(values) {
+  const xs = finiteNumbers(values).sort((a,b) => a-b);
+  const n = xs.length;
+  if (!n) return null;
+  const sum = xs.reduce((a,b) => a+b, 0);
+  const mean = sum / n;
+  const median = n % 2
+    ? xs[(n-1)/2]
+    : (xs[n/2-1] + xs[n/2]) / 2;
+  const min = xs[0];
+  const max = xs[n-1];
+  const variance = n > 1
+    ? xs.reduce((acc,x) => acc + (x-mean)*(x-mean), 0) / (n-1)
+    : 0;
+  return {
+    n,
+    mean,
+    median,
+    min,
+    max,
+    range:max-min,
+    std:Math.sqrt(Math.max(0, variance))
+  };
+}
+
+function triangularMedian(a,c,b) {
+  a=Number(a); c=Number(c); b=Number(b);
+  if (![a,c,b].every(Number.isFinite) || b < a) return null;
+  if (b === a) return a;
+  return c >= (a+b)/2
+    ? a + Math.sqrt((b-a)*(c-a)/2)
+    : b - Math.sqrt((b-a)*(b-c)/2);
+}
+
+function modelStatsForServiceTime(st) {
+  if (!st) return null;
+  const d = st.distribution;
+  const mean = Number(st.mean_minutes);
+  const std = Number(st.std_minutes);
+  if (d === "constant") {
+    const v = Number.isFinite(mean) ? mean : 0;
+    return {n:0,mean:v,median:v,min:v,max:v,range:0,std:0};
+  }
+  if (d === "triangular") {
+    const a=Number(st.minimum_minutes), c=Number(st.mode_minutes), b=Number(st.maximum_minutes);
+    if ([a,c,b].every(Number.isFinite)) {
+      const mu=(a+b+c)/3;
+      const variance=(a*a+b*b+c*c-a*b-a*c-b*c)/18;
+      return {
+        n:0,
+        mean:mu,
+        median:triangularMedian(a,c,b),
+        min:a,
+        max:b,
+        range:b-a,
+        std:Math.sqrt(Math.max(0,variance))
+      };
+    }
+  }
+  return {
+    n:0,
+    mean:Number.isFinite(mean) ? mean : null,
+    median:null,
+    min:null,
+    max:null,
+    range:null,
+    std:Number.isFinite(std) ? std : null
+  };
+}
+
+function histogram(values,bins=12) {
+  const xs=finiteNumbers(values);
+  if (!xs.length) return [];
+  const min=Math.min(...xs), max=Math.max(...xs);
+  if (max === min) return [{lo:min,hi:max,count:xs.length}];
+  const step=(max-min)/bins;
+  const out=Array.from({length:bins},(_,i)=>({lo:min+i*step,hi:min+(i+1)*step,count:0}));
+  xs.forEach(x => {
+    const i=Math.min(bins-1,Math.max(0,Math.floor((x-min)/step)));
+    out[i].count += 1;
+  });
+  return out;
+}
+
+function StatisticValue({label,value,suffix=""}) {
+  const display = value === null || value === undefined || !Number.isFinite(Number(value))
+    ? "—"
+    : `${Number(value).toFixed(2)}${suffix}`;
+  return (
+    <div style={{background:"#fff",border:"1px solid #e5e7eb",borderRadius:8,padding:"8px 10px"}}>
+      <div style={{fontSize:10,color:"#64748b",textTransform:"uppercase",letterSpacing:".04em"}}>{label}</div>
+      <div style={{fontSize:15,fontWeight:700,marginTop:2}}>{display}</div>
+    </div>
+  );
+}
+
+function DistributionStatsPanel({title,distribution,samples,fallbackStats,observedCount,probability,onClose}) {
+  const actual=describeNumbers(samples);
+  const stats=actual || fallbackStats;
+  const hist=histogram(samples);
+  const maxCount=hist.length ? Math.max(...hist.map(x=>x.count),1) : 1;
+  return (
+    <div style={{margin:"12px",padding:14,border:"1px solid #cbd5e1",borderRadius:10,background:"#fff"}}>
+      <div style={{display:"flex",justifyContent:"space-between",gap:12,alignItems:"flex-start"}}>
+        <div>
+          <div style={{fontWeight:800}}>{title}</div>
+          <div style={{fontSize:12,color:"#64748b",marginTop:3}}>
+            Distribution: <b>{distribution || "unavailable"}</b>
+            {actual ? " · statistics computed from observed points" : " · model parameters shown where computable"}
+          </div>
+        </div>
+        <button style={{...buttonStyle,padding:"5px 9px"}} onClick={onClose}>Close</button>
+      </div>
+
+      {(observedCount !== undefined && observedCount !== null || probability !== undefined && probability !== null) &&
+        <div style={{fontSize:12,color:"#475569",marginTop:9}}>
+          {observedCount !== undefined && observedCount !== null ? `Observed transitions: ${observedCount}` : ""}
+          {observedCount !== undefined && observedCount !== null && probability !== undefined && probability !== null ? " · " : ""}
+          {probability !== undefined && probability !== null ? `Routing probability: ${(100*Number(probability)).toFixed(1)}%` : ""}
+        </div>
+      }
+
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(105px,1fr))",gap:8,marginTop:12}}>
+        <StatisticValue label="Points" value={actual ? actual.n : (observedCount ?? 0)} />
+        <StatisticValue label="Mean" value={stats?.mean} suffix=" min" />
+        <StatisticValue label="Median" value={stats?.median} suffix=" min" />
+        <StatisticValue label="Min" value={stats?.min} suffix=" min" />
+        <StatisticValue label="Max" value={stats?.max} suffix=" min" />
+        <StatisticValue label="Range" value={stats?.range} suffix=" min" />
+        <StatisticValue label="Std dev" value={stats?.std} suffix=" min" />
+      </div>
+
+      {hist.length > 0 ?
+        <div style={{marginTop:14}}>
+          <div style={{fontSize:12,fontWeight:700,marginBottom:6}}>Observed distribution</div>
+          <div style={{height:120,display:"flex",gap:3,alignItems:"flex-end",borderLeft:"1px solid #cbd5e1",borderBottom:"1px solid #cbd5e1",padding:"8px 8px 0"}}>
+            {hist.map((b,i) =>
+              <div key={i} title={`${b.lo.toFixed(2)}–${b.hi.toFixed(2)} min: ${b.count}`} style={{flex:1,minWidth:5,height:`${Math.max(4,100*b.count/maxCount)}%`,background:"#6366f1",borderRadius:"3px 3px 0 0"}} />
+            )}
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"#64748b",marginTop:3}}>
+            <span>{hist[0].lo.toFixed(2)} min</span><span>{hist[hist.length-1].hi.toFixed(2)} min</span>
+          </div>
+        </div>
+        :
+        <div style={{fontSize:12,color:"#64748b",marginTop:12}}>
+          No observed point distribution is available for this item. Summary values are shown only where the configured distribution makes them identifiable.
+        </div>
+      }
+    </div>
+  );
+}
+
 function ProcessGraph({model,onSelectActivity,onSelectTransition,selectedActivityId,selectedTransitionIndex}) {
+  const [statsTarget,setStatsTarget] = useState(null);
+
   const activities =
     Array.isArray(model?.activities)
     ? model.activities
@@ -307,7 +469,7 @@ function ProcessGraph({model,onSelectActivity,onSelectTransition,selectedActivit
     .sort((a,b) => a-b);
 
   const nodeW = 160;
-  const nodeH = 68;
+  const nodeH = 88;
   const xGap = 90;
   const yGap = 44;
   const marginX = 35;
@@ -542,7 +704,7 @@ function ProcessGraph({model,onSelectActivity,onSelectTransition,selectedActivit
                   &&
                   <g>
                     <rect
-                      x={mx-24}
+                      x={mx-52}
                       y={my-10}
                       width="48"
                       height="19"
@@ -552,7 +714,7 @@ function ProcessGraph({model,onSelectActivity,onSelectTransition,selectedActivit
                     />
 
                     <text
-                      x={mx}
+                      x={mx-28}
                       y={my+4}
                       textAnchor="middle"
                       fontSize="10"
@@ -568,6 +730,17 @@ function ProcessGraph({model,onSelectActivity,onSelectTransition,selectedActivit
                         ).toFixed(0)
                       }%
                     </text>
+
+                    <g
+                      onClick={e => {
+                        e.stopPropagation();
+                        setStatsTarget({type:"transition",index:i});
+                      }}
+                      style={{cursor:"pointer"}}
+                    >
+                      <rect x={mx+2} y={my-10} width="45" height="19" rx="8" fill="#eef2ff" stroke="#a5b4fc" />
+                      <text x={mx+24.5} y={my+4} textAnchor="middle" fontSize="9.5" fontWeight="700" fill="#4338ca">Stats</text>
+                    </g>
                   </g>
                 }
               </g>
@@ -663,28 +836,63 @@ function ProcessGraph({model,onSelectActivity,onSelectTransition,selectedActivit
               {(isStart || isEnd)
                 &&
                 <text
-                  x={nodeW/2}
-                  y="60"
-                  textAnchor="middle"
+                  x="10"
+                  y="67"
                   fontSize="9"
                   fontWeight="700"
-                  fill={
-                    isStart
-                    ? "#4f46e5"
-                    : "#059669"
-                  }
+                  fill={isStart ? "#4f46e5" : "#059669"}
                 >
-                  {
-                    isStart
-                    ? "START"
-                    : "END"
-                  }
+                  {isStart ? "START" : "END"}
                 </text>
               }
+
+              <g
+                onClick={e => {
+                  e.stopPropagation();
+                  setStatsTarget({type:"activity",id:a.id});
+                }}
+                style={{cursor:"pointer"}}
+              >
+                <rect x={nodeW-58} y="56" width="48" height="20" rx="8" fill="#eef2ff" stroke="#a5b4fc" />
+                <text x={nodeW-34} y="70" textAnchor="middle" fontSize="9.5" fontWeight="700" fill="#4338ca">Stats</text>
+              </g>
             </g>
           );
         })}
       </svg>
+
+      {statsTarget?.type === "activity" && (() => {
+        const a = activities.find(x => x.id === statsTarget.id);
+        if (!a) return null;
+        const st = a.service_time || {};
+        return (
+          <DistributionStatsPanel
+            title={`${a.name || a.id} — activity duration`}
+            distribution={st.distribution}
+            samples={st.samples_minutes}
+            fallbackStats={modelStatsForServiceTime(st)}
+            onClose={() => setStatsTarget(null)}
+          />
+        );
+      })()}
+
+      {statsTarget?.type === "transition" && (() => {
+        const t = transitions[statsTarget.index];
+        if (!t) return null;
+        const source = byId[t.source]?.name || t.source;
+        const target = byId[t.target]?.name || t.target;
+        return (
+          <DistributionStatsPanel
+            title={`${source} → ${target} — handoff delay`}
+            distribution={finiteNumbers(t.handoff_samples_minutes).length ? "empirical" : "unavailable"}
+            samples={t.handoff_samples_minutes}
+            fallbackStats={null}
+            observedCount={t.observed_count}
+            probability={t.probability}
+            onClose={() => setStatsTarget(null)}
+          />
+        );
+      })()}
 
       <div style={{
         fontSize:11,
@@ -693,7 +901,7 @@ function ProcessGraph({model,onSelectActivity,onSelectTransition,selectedActivit
       }}>
         Solid arrows show forward routing. Dashed amber arrows
         indicate same-level/backward routing such as rework loops.
-        Edge labels are routing probabilities.
+        Edge labels show routing probabilities. Use each node or edge Stats button to inspect its observed distribution and descriptive statistics.
       </div>
     </div>
   );

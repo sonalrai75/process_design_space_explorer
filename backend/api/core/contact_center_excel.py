@@ -121,6 +121,7 @@ def _service_time_spec(samples: list[float]) -> dict:
             "minimum_minutes": lo,
             "mode_minutes": med,
             "maximum_minutes": max(hi, lo + 0.01),
+            "samples_minutes": clean,
             "sample_count": n,
             "confidence": "low",
             "fallback_reason": "Fewer than 10 observed service times; triangular fallback used.",
@@ -254,6 +255,7 @@ def import_contact_center_workbook(filename: str, content: bytes) -> dict:
     queue_skills: dict[str, list[str]] = defaultdict(list)
     queue_pools: dict[str, Counter] = defaultdict(Counter)
     leg_records = []
+    leg_end_times: dict[tuple[str, str], object] = {}
     for _, row in starts.sort_values("event_time").iterrows():
         queue_name = str(row["queue"]).strip()
         if not queue_name or queue_name.lower() == "nan":
@@ -263,6 +265,7 @@ def import_contact_center_workbook(filename: str, content: bytes) -> dict:
         end_time = end_map.get(key)
         if end_time is not None and end_time >= row["event_time"]:
             duration = (end_time - row["event_time"]).total_seconds() / 60.0
+            leg_end_times[key] = end_time
             if duration > 0:
                 service_samples[qid].append(float(duration))
         skill = str(row.get("skill", "")).strip()
@@ -279,17 +282,39 @@ def import_contact_center_workbook(filename: str, content: bytes) -> dict:
 
     # Build routing counts from ordered service legs per interaction.
     transition_counts: Counter = Counter()
+    transition_handoff_samples: dict[tuple[str, str], list[float]] = defaultdict(list)
     by_interaction: dict[str, list[tuple]] = defaultdict(list)
-    for interaction_id, event_time, qid in leg_records:
-        by_interaction[interaction_id].append((event_time, qid))
-    for legs in by_interaction.values():
-        ordered = [qid for _, qid in sorted(legs)]
+
+    # Rebuild leg identifiers from SERVICE_START rows so the end timestamp for
+    # each leg can be matched when calculating between-queue handoff time.
+    for _, row in starts.sort_values("event_time").iterrows():
+        queue_name = str(row["queue"]).strip()
+        if not queue_name or queue_name.lower() == "nan":
+            continue
+        qid = _safe_id(queue_name)
+        interaction_id = str(row["interaction_id"])
+        leg_id = str(row["contact_leg_id"])
+        by_interaction[interaction_id].append((row["event_time"], qid, leg_id))
+
+    for interaction_id, legs in by_interaction.items():
+        ordered = sorted(legs)
         if not ordered:
             continue
-        transition_counts[("contact_start", ordered[0])] += 1
-        for a, b in zip(ordered, ordered[1:]):
-            transition_counts[(a, b)] += 1
-        transition_counts[(ordered[-1], "contact_complete")] += 1
+
+        transition_counts[("contact_start", ordered[0][1])] += 1
+
+        for left, right in zip(ordered[:-1], ordered[1:]):
+            source_time, source_q, source_leg = left
+            target_time, target_q, _target_leg = right
+            transition_counts[(source_q, target_q)] += 1
+
+            source_end = leg_end_times.get((interaction_id, source_leg))
+            if source_end is not None and target_time >= source_end:
+                delay = float((target_time - source_end).total_seconds() / 60.0)
+                if np.isfinite(delay) and delay >= 0:
+                    transition_handoff_samples[(source_q, target_q)].append(delay)
+
+        transition_counts[(ordered[-1][1], "contact_complete")] += 1
 
     outgoing_totals: Counter = Counter()
     for (source, _target), count in transition_counts.items():
@@ -299,6 +324,17 @@ def import_contact_center_workbook(filename: str, content: bytes) -> dict:
             "source": source,
             "target": target,
             "probability": float(count / outgoing_totals[source]),
+            "observed_count": int(count),
+            "handoff_samples_minutes": (
+                [
+                    float(x)
+                    for x in transition_handoff_samples.get(
+                        (source, target),
+                        [],
+                    )
+                ]
+                or None
+            ),
         }
         for (source, target), count in sorted(transition_counts.items())
     ]

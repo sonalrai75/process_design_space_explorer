@@ -260,6 +260,15 @@ def calibrate_event_log(
                     distribution=distribution,
                     mean_minutes=float(row["mean_service_minutes"]),
                     std_minutes=float(row["std_service_minutes"]),
+                    samples_minutes=[
+                        float(x)
+                        for x in work.loc[
+                            (work["activity"] == name)
+                            & work["service_minutes"].notna(),
+                            "service_minutes",
+                        ].tolist()
+                        if np.isfinite(x)
+                    ] or None,
                 ),
                 cost_per_hour=float(default_resource_cost_per_hour) if pool else 0.0,
                 model_source=model_source,
@@ -286,16 +295,30 @@ def calibrate_event_log(
     start_activity_name = str(first_acts.value_counts().index[0])
 
     route_counts: Counter[tuple[str, str]] = Counter()
+    route_handoff_samples: dict[tuple[str, str], list[float]] = defaultdict(list)
     variants: list[tuple[str, ...]] = []
     rework_cases = 0
 
     for _, g in work.groupby("case_id", sort=False):
+        g = g.sort_values("start").reset_index(drop=True)
         acts = g["activity"].astype(str).tolist()
         variants.append(tuple(acts))
         if len(set(acts)) < len(acts):
             rework_cases += 1
-        for a, b in zip(acts[:-1], acts[1:]):
+
+        for i, (a, b) in enumerate(zip(acts[:-1], acts[1:])):
             route_counts[(a, b)] += 1
+
+            # Handoff/wait distribution is identifiable only when the source
+            # activity has a real end timestamp. When no end column exists,
+            # service time is inferred from the next start, so a separate
+            # handoff delay cannot be estimated without double counting.
+            source_end = g.iloc[i]["end"]
+            target_start = g.iloc[i + 1]["start"]
+            if pd.notna(source_end) and pd.notna(target_start):
+                delay = float((target_start - source_end).total_seconds() / 60.0)
+                if np.isfinite(delay) and delay >= 0:
+                    route_handoff_samples[(a, b)].append(delay)
 
     for a in last_acts.astype(str):
         route_counts[(a, "__PROCESS_END__")] += 1
@@ -315,6 +338,17 @@ def calibrate_event_log(
                 source=source_id,
                 target=target_id,
                 probability=float(count / max(outgoing_totals[source_name], 1)),
+                observed_count=int(count),
+                handoff_samples_minutes=(
+                    [
+                        float(x)
+                        for x in route_handoff_samples.get(
+                            (source_name, target_name),
+                            [],
+                        )
+                    ]
+                    or None
+                ),
             )
         )
 

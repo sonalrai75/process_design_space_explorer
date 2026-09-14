@@ -74,6 +74,9 @@ class Transition(BaseModel):
     source: str
     target: str
     probability: float = 1.0
+    # Optional observed evidence retained for on-demand statistical inspection.
+    observed_count: int | None = None
+    handoff_samples_minutes: list[float] | None = None
 
 
 class ResourcePool(BaseModel):
