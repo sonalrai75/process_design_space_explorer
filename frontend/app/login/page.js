@@ -1,7 +1,6 @@
 "use client";
 
-import { useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useEffect, useState } from "react";
 
 const COOKIE_NAME = "pds_gate";
 
@@ -12,11 +11,15 @@ function safeNext(value) {
 }
 
 export default function LoginPage() {
-  const searchParams = useSearchParams();
-  const next = safeNext(searchParams.get("next") || "/");
+  const [next, setNext] = useState("/");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    setNext(safeNext(params.get("next") || "/"));
+  }, []);
 
   async function submit(event) {
     event.preventDefault();
