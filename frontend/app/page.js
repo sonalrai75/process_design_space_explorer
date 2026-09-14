@@ -918,6 +918,29 @@ export default function Home() {
     }
   }
 
+  async function loadModelJsonFile(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const parsed = JSON.parse(await file.text());
+      if (!parsed?.activities || !parsed?.resources || !parsed?.architectures) {
+        throw new Error("The selected JSON is not a valid process model.");
+      }
+      setModel(parsed);
+      setSim(null);
+      setOpt(null);
+      setCmp(null);
+      setCalibration(null);
+      setManualCommitted(null);
+      setStatus(`Loaded ${parsed.name || file.name}`);
+    } catch (e) {
+      setStatus(e.message || "Unable to load model JSON");
+    } finally {
+      event.target.value = "";
+    }
+  }
+
   async function runSimulation() {
     try {
       let m = model;
@@ -1916,6 +1939,22 @@ export default function Home() {
             Load demo model
           </button>
 
+          <label style={{
+            ...buttonStyle,
+            display:"inline-flex",
+            alignItems:"center",
+            opacity:busy ? 0.55 : 1
+          }}>
+            Load model JSON
+            <input
+              type="file"
+              accept=".json,application/json"
+              disabled={busy}
+              onChange={loadModelJsonFile}
+              style={{display:"none"}}
+            />
+          </label>
+
           <button
             disabled={busy}
             style={{
@@ -2085,6 +2124,29 @@ export default function Home() {
           }}>
             {model.name}
           </h2>
+
+          {(model.arrival_profile?.length > 0 ||
+            (model.resources || []).some(r => r.staffing_profile?.length || r.skills?.length)) &&
+            <div style={{
+              margin:"-4px 0 14px",
+              padding:"10px 12px",
+              border:"1px solid #dbeafe",
+              borderRadius:10,
+              background:"#f8fbff",
+              fontSize:12,
+              color:"#475569"
+            }}>
+              {model.arrival_profile?.length > 0
+                ? `Time-varying arrivals: ${model.arrival_profile.length} interval(s). `
+                : ""}
+              {(model.resources || []).some(r => r.staffing_profile?.length)
+                ? "Time-varying staffing enabled. "
+                : ""}
+              {(model.resources || []).some(r => r.skills?.length)
+                ? "Skill-based resource routing enabled where configured."
+                : ""}
+            </div>
+          }
 
           <div style={{
             display:"flex",
@@ -2744,10 +2806,21 @@ export default function Home() {
                         {r.name || r.id}
                       </b>
 
+                      {r.skills?.length > 0 &&
+                        <div style={{marginTop:5,color:"#64748b"}}>
+                          Skills: {r.skills.join(", ")}
+                        </div>
+                      }
+                      {r.staffing_profile?.length > 0 &&
+                        <div style={{marginTop:3,color:"#64748b"}}>
+                          Staffing profile: {r.staffing_profile.length} interval(s)
+                        </div>
+                      }
+
                       <div style={{
                         marginTop:6
                       }}>
-                        Capacity
+                        Base capacity
                       </div>
 
                       <input

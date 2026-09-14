@@ -363,19 +363,18 @@ def _evaluate(
         model,
     )
 
+    # Keep the structural-capacity report for diagnostics, but prefer
+    # utilization measured by the simulation. This is essential for
+    # time-varying staffing and skill-based resource routing.
     capacity = calculate_structural_capacity(
         model,
         arch,
         design,
     )
-
-    metrics[
-        "max_resource_utilization"
-    ] = float(
-        capacity[
-            "max_resource_utilization"
-        ]
-    )
+    if "max_resource_utilization" not in metrics:
+        metrics["max_resource_utilization"] = float(
+            capacity["max_resource_utilization"]
+        )
 
     raw = _constraint_residual(
         metrics,
@@ -680,17 +679,7 @@ def _replicated_robustness(
     p95 = []
     backlog = []
 
-    capacity = calculate_structural_capacity(
-        model,
-        arch,
-        design,
-    )
-
-    max_util = float(
-        capacity[
-            "max_resource_utilization"
-        ]
-    )
+    max_util_values = []
 
     for seed in seeds:
         out = simulate(
@@ -713,9 +702,14 @@ def _replicated_robustness(
             model,
         )
 
-        metrics[
-            "max_resource_utilization"
-        ] = max_util
+        if "max_resource_utilization" not in metrics:
+            capacity = calculate_structural_capacity(
+                model, arch, design
+            )
+            metrics["max_resource_utilization"] = float(
+                capacity["max_resource_utilization"]
+            )
+        max_util_values.append(float(metrics["max_resource_utilization"]))
 
         raw = _constraint_residual(
             metrics,
@@ -861,7 +855,7 @@ def _replicated_robustness(
             )
             / max(len(backlog), 1)
         ),
-        "max_resource_utilization": max_util,
+        "max_resource_utilization": float(np.mean(max_util_values)) if max_util_values else 0.0,
     }
 
 

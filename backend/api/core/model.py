@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 
 VariableKind = Literal['fixed', 'continuous', 'quantized', 'discrete']
 DistributionKind = Literal['constant', 'normal', 'lognormal', 'exponential', 'empirical', 'triangular']
+RoutingPolicy = Literal['fixed_pool', 'earliest_available_skill']
 
 
 class DesignVariable(BaseModel):
@@ -33,9 +34,6 @@ class ServiceTime(BaseModel):
     distribution: DistributionKind = 'lognormal'
     mean_minutes: float = 30.0
     std_minutes: float = 10.0
-
-    # Optional calibration metadata. These fields let a calibrated model retain
-    # the observed service-time sample rather than collapsing it to mean/std.
     samples_minutes: list[float] | None = None
     min_minutes: float | None = None
     mode_minutes: float | None = None
@@ -45,12 +43,33 @@ class ServiceTime(BaseModel):
     fallback_reason: str | None = None
 
 
+class StaffingInterval(BaseModel):
+    """Capacity available during one interval in a repeating staffing profile."""
+    start_minute: float
+    end_minute: float
+    capacity: int
+    label: str | None = None
+
+
+class ArrivalInterval(BaseModel):
+    """Piecewise-constant arrival rate during a repeating time profile."""
+    start_minute: float
+    end_minute: float
+    rate_per_hour: float
+    label: str | None = None
+
+
 class Activity(BaseModel):
     id: str
     name: str
     resource_pool: str | None = None
     service_time: ServiceTime = Field(default_factory=ServiceTime)
     cost_per_hour: float = 75.0
+
+    # Skill-based routing is opt-in. Existing models continue to use resource_pool.
+    required_skills: list[str] = Field(default_factory=list)
+    eligible_resource_pools: list[str] = Field(default_factory=list)
+    routing_policy: RoutingPolicy = 'fixed_pool'
 
 
 class Transition(BaseModel):
@@ -63,9 +82,15 @@ class ResourcePool(BaseModel):
     id: str
     name: str
     capacity: int = 1
-    # Explicit resource cost makes calibrated models independent of demo-specific
-    # activity naming. Existing models that omit it remain backward compatible.
     cost_per_hour: float | None = None
+
+    # Pools can advertise multiple skills; an activity may then choose among all
+    # pools whose skill set covers the activity's required_skills.
+    skills: list[str] = Field(default_factory=list)
+
+    # If present, this profile replaces constant staffing for simulation. The
+    # profile repeats every ProcessModel.staffing_profile_repeat_minutes.
+    staffing_profile: list[StaffingInterval] = Field(default_factory=list)
 
 
 class Architecture(BaseModel):
@@ -86,6 +111,14 @@ class ProcessModel(BaseModel):
     variables: list[DesignVariable]
     arrival_rate_per_hour: float = 6.0
     sla_minutes: float = 480.0
+
+    # Optional piecewise-constant non-stationary arrival process. When empty,
+    # arrival_rate_per_hour is used exactly as before.
+    arrival_profile: list[ArrivalInterval] = Field(default_factory=list)
+    arrival_profile_repeat_minutes: float = 1440.0
+
+    # Staffing profiles on resource pools repeat over this horizon.
+    staffing_profile_repeat_minutes: float = 1440.0
 
     def activity_map(self):
         return {a.id: a for a in self.activities}

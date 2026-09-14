@@ -1,0 +1,160 @@
+{
+  "id": "call-center-demo-1",
+  "name": "Sample Omnichannel Call Center",
+  "start_activity": "ivr",
+  "end_activity": "resolved",
+  "arrival_rate_per_hour": 15.0,
+  "sla_minutes": 20.0,
+  "arrival_profile_repeat_minutes": 1440.0,
+  "staffing_profile_repeat_minutes": 1440.0,
+  "arrival_profile": [
+    {"start_minute": 0, "end_minute": 480, "rate_per_hour": 4, "label": "Overnight"},
+    {"start_minute": 480, "end_minute": 600, "rate_per_hour": 18, "label": "Morning ramp"},
+    {"start_minute": 600, "end_minute": 780, "rate_per_hour": 30, "label": "Peak"},
+    {"start_minute": 780, "end_minute": 960, "rate_per_hour": 24, "label": "Afternoon"},
+    {"start_minute": 960, "end_minute": 1080, "rate_per_hour": 12, "label": "Evening ramp-down"},
+    {"start_minute": 1080, "end_minute": 1440, "rate_per_hour": 4, "label": "Night"}
+  ],
+  "activities": [
+    {
+      "id": "ivr",
+      "name": "IVR / Intent Capture",
+      "resource_pool": null,
+      "service_time": {"distribution": "triangular", "mean_minutes": 2.0, "std_minutes": 0.8, "min_minutes": 0.5, "mode_minutes": 1.5, "max_minutes": 5.0},
+      "cost_per_hour": 0
+    },
+    {
+      "id": "general_support",
+      "name": "General Support",
+      "resource_pool": "general_agents",
+      "required_skills": ["general"],
+      "eligible_resource_pools": ["general_agents", "cross_trained_agents"],
+      "routing_policy": "earliest_available_skill",
+      "service_time": {"distribution": "empirical", "mean_minutes": 9.7, "std_minutes": 4.2, "samples_minutes": [4.5,5.2,6.1,6.8,7.0,7.4,8.1,8.5,9.0,9.4,9.8,10.1,10.5,11.2,11.8,12.6,13.4,14.8,16.1,18.5], "sample_count": 20, "confidence": "moderate"},
+      "cost_per_hour": 35
+    },
+    {
+      "id": "billing_support",
+      "name": "Billing Support",
+      "resource_pool": "general_agents",
+      "required_skills": ["billing"],
+      "eligible_resource_pools": ["general_agents", "cross_trained_agents"],
+      "routing_policy": "earliest_available_skill",
+      "service_time": {"distribution": "empirical", "mean_minutes": 12.0, "std_minutes": 5.0, "samples_minutes": [5.5,6.8,7.1,7.9,8.3,8.8,9.4,9.8,10.2,10.7,11.1,11.6,12.2,12.8,13.3,13.9,14.5,15.2,16.0,16.8,17.5,18.2,19.0,20.5,22.0], "sample_count": 25, "confidence": "moderate"},
+      "cost_per_hour": 38
+    },
+    {
+      "id": "technical_support",
+      "name": "Technical Support",
+      "resource_pool": "technical_agents",
+      "required_skills": ["technical"],
+      "eligible_resource_pools": ["technical_agents", "cross_trained_agents"],
+      "routing_policy": "earliest_available_skill",
+      "service_time": {"distribution": "empirical", "mean_minutes": 16.0, "std_minutes": 7.0, "samples_minutes": [6.2,7.4,8.1,9.0,9.8,10.4,11.2,12.0,12.8,13.5,14.2,15.0,15.8,16.4,17.2,18.0,18.8,19.5,20.3,21.1,22.0,23.5,25.0,27.0,30.0], "sample_count": 25, "confidence": "moderate"},
+      "cost_per_hour": 45
+    },
+    {
+      "id": "supervisor_escalation",
+      "name": "Supervisor Escalation",
+      "resource_pool": "supervisors",
+      "required_skills": ["supervisor"],
+      "eligible_resource_pools": ["supervisors"],
+      "routing_policy": "earliest_available_skill",
+      "service_time": {"distribution": "triangular", "mean_minutes": 10.0, "std_minutes": 4.0, "min_minutes": 4.0, "mode_minutes": 8.0, "max_minutes": 22.0, "sample_count": 7, "confidence": "low", "fallback_reason": "Sparse escalation sample"},
+      "cost_per_hour": 60
+    },
+    {
+      "id": "resolved",
+      "name": "Resolved",
+      "resource_pool": null,
+      "service_time": {"distribution": "constant", "mean_minutes": 0.01, "std_minutes": 0.0},
+      "cost_per_hour": 0
+    }
+  ],
+  "resources": [
+    {
+      "id": "general_agents",
+      "name": "General / Billing Agents",
+      "capacity": 12,
+      "cost_per_hour": 35,
+      "skills": ["general", "billing"],
+      "staffing_profile": [
+        {"start_minute": 0, "end_minute": 480, "capacity": 3, "label": "Overnight"},
+        {"start_minute": 480, "end_minute": 600, "capacity": 9, "label": "Morning ramp"},
+        {"start_minute": 600, "end_minute": 780, "capacity": 12, "label": "Peak"},
+        {"start_minute": 780, "end_minute": 960, "capacity": 10, "label": "Afternoon"},
+        {"start_minute": 960, "end_minute": 1080, "capacity": 6, "label": "Evening"},
+        {"start_minute": 1080, "end_minute": 1440, "capacity": 3, "label": "Night"}
+      ]
+    },
+    {
+      "id": "technical_agents",
+      "name": "Technical Specialists",
+      "capacity": 7,
+      "cost_per_hour": 45,
+      "skills": ["technical"],
+      "staffing_profile": [
+        {"start_minute": 0, "end_minute": 480, "capacity": 2},
+        {"start_minute": 480, "end_minute": 600, "capacity": 5},
+        {"start_minute": 600, "end_minute": 780, "capacity": 7},
+        {"start_minute": 780, "end_minute": 960, "capacity": 6},
+        {"start_minute": 960, "end_minute": 1080, "capacity": 4},
+        {"start_minute": 1080, "end_minute": 1440, "capacity": 2}
+      ]
+    },
+    {
+      "id": "cross_trained_agents",
+      "name": "Cross-Trained Flex Agents",
+      "capacity": 5,
+      "cost_per_hour": 42,
+      "skills": ["general", "billing", "technical"],
+      "staffing_profile": [
+        {"start_minute": 0, "end_minute": 480, "capacity": 1},
+        {"start_minute": 480, "end_minute": 600, "capacity": 3},
+        {"start_minute": 600, "end_minute": 780, "capacity": 5},
+        {"start_minute": 780, "end_minute": 960, "capacity": 4},
+        {"start_minute": 960, "end_minute": 1080, "capacity": 2},
+        {"start_minute": 1080, "end_minute": 1440, "capacity": 1}
+      ]
+    },
+    {
+      "id": "supervisors",
+      "name": "Supervisors",
+      "capacity": 2,
+      "cost_per_hour": 60,
+      "skills": ["supervisor"],
+      "staffing_profile": [
+        {"start_minute": 0, "end_minute": 480, "capacity": 1},
+        {"start_minute": 480, "end_minute": 1080, "capacity": 2},
+        {"start_minute": 1080, "end_minute": 1440, "capacity": 1}
+      ]
+    }
+  ],
+  "architectures": [
+    {
+      "id": "baseline",
+      "name": "Skill-Based Baseline",
+      "enabled_activities": ["ivr", "general_support", "billing_support", "technical_support", "supervisor_escalation", "resolved"],
+      "transitions": [
+        {"source": "ivr", "target": "resolved", "probability": 0.10},
+        {"source": "ivr", "target": "general_support", "probability": 0.35},
+        {"source": "ivr", "target": "billing_support", "probability": 0.30},
+        {"source": "ivr", "target": "technical_support", "probability": 0.25},
+        {"source": "general_support", "target": "resolved", "probability": 0.93},
+        {"source": "general_support", "target": "supervisor_escalation", "probability": 0.07},
+        {"source": "billing_support", "target": "resolved", "probability": 0.90},
+        {"source": "billing_support", "target": "supervisor_escalation", "probability": 0.10},
+        {"source": "technical_support", "target": "resolved", "probability": 0.88},
+        {"source": "technical_support", "target": "supervisor_escalation", "probability": 0.12},
+        {"source": "supervisor_escalation", "target": "resolved", "probability": 1.0}
+      ]
+    }
+  ],
+  "variables": [
+    {"name": "resource_capacity__general_agents", "kind": "quantized", "lower": 8, "upper": 18, "step": 1, "value": 12},
+    {"name": "resource_capacity__technical_agents", "kind": "quantized", "lower": 4, "upper": 11, "step": 1, "value": 7},
+    {"name": "resource_capacity__cross_trained_agents", "kind": "quantized", "lower": 2, "upper": 9, "step": 1, "value": 5},
+    {"name": "resource_capacity__supervisors", "kind": "quantized", "lower": 1, "upper": 4, "step": 1, "value": 2},
+    {"name": "automation_level", "kind": "continuous", "lower": 0.0, "upper": 0.35, "value": 0.0}
+  ]
+}
