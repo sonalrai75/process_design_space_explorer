@@ -1623,6 +1623,52 @@ export default function Home() {
     );
   }
 
+  async function loadContactCenterSample() {
+    try {
+      setStatus("Loading Contact Center sample workbook");
+
+      const response = await fetch(
+        "/templates/contact_center_sample.xlsx"
+      );
+
+      if (!response.ok) {
+        throw new Error("Unable to load the sample workbook");
+      }
+
+      const blob = await response.blob();
+      const form = new FormData();
+      form.append(
+        "file",
+        new File(
+          [blob],
+          "contact_center_sample.xlsx",
+          {
+            type:
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          }
+        )
+      );
+
+      const data = await call(
+        "/api/contact-center/import",
+        { method:"POST", body:form },
+        "Loading Contact Center sample"
+      );
+
+      setModel(data.model);
+      setCalibration(data.summary);
+      setSim(null);
+      setOpt(null);
+      setCmp(null);
+      setManualCommitted(null);
+      setContactCenterPreview(null);
+      setLogFile(null);
+      setStatus("Contact Center sample loaded");
+    } catch(e) {
+      setStatus(e.message);
+    }
+  }
+
   async function previewContactCenterWorkbook() {
     if (!logFile) {
       setStatus("Choose a Contact Center Excel workbook first");
@@ -1982,8 +2028,8 @@ export default function Home() {
           color:"#4b5563",
           lineHeight:1.5
         }}>
-          Load or calibrate the process model, run the AS-IS simulation,
-          and define the design variables before choosing an optimization path.
+          Choose the workflow class first. The data-import section immediately below
+          changes to the template and parser for that workflow class.
         </p>
 
         <div style={{
@@ -2019,253 +2065,7 @@ export default function Home() {
           </div>
         </div>
 
-        <div style={{
-          display:"flex",
-          gap:10,
-          flexWrap:"wrap"
-        }}>
-          {workflowClass === "general" &&
-            <button
-              disabled={busy}
-              style={{
-                ...buttonStyle,
-                opacity:busy ? 0.55 : 1
-              }}
-              onClick={loadModel}
-            >
-              Load demo model
-            </button>
-          }
-
-
-          <button
-            disabled={busy}
-            style={{
-              ...primaryButtonStyle,
-              opacity:busy ? 0.55 : 1
-            }}
-            onClick={runSimulation}
-          >
-            Run baseline simulation
-          </button>
-        </div>
       </section>
-
-      <section style={{
-        ...card,
-        marginTop:18
-      }}>
-        <div style={{fontSize:11,fontWeight:800,letterSpacing:".06em",textTransform:"uppercase",color:"#6366f1",marginBottom:6}}>Step 2 · Optimize</div>
-        <h2 style={{
-          margin:"0 0 6px",fontSize:21,letterSpacing:"-.015em"
-        }}>
-          Choose optimization approach
-        </h2>
-
-        <p style={{
-          marginTop:0,
-          marginBottom:16,
-          color:"#4b5563",
-          lineHeight:1.5
-        }}>
-          Automated and manual optimization are alternative paths to a TO-BE design.
-          You can use either approach after defining the design variables.
-        </p>
-
-        <div style={{
-          display:"grid",
-          gridTemplateColumns:
-            "repeat(auto-fit,minmax(280px,1fr))",
-          gap:14
-        }}>
-          <div style={{
-            border:"1px solid #dbeafe",
-            borderRadius:16,
-            padding:18,
-            background:"linear-gradient(180deg,#ffffff,#f8fbff)",
-            boxShadow:"0 5px 16px rgba(37,99,235,.045)"
-          }}>
-            <div style={{
-              fontSize:12,
-              fontWeight:800,
-              color:"#1d4ed8",
-              letterSpacing:".06em",
-              textTransform:"uppercase"
-            }}>
-              Automated optimization
-            </div>
-
-            <h3 style={{
-              margin:"6px 0 8px"
-            }}>
-              Architecture-family search
-            </h3>
-
-            <p style={{
-              margin:"0 0 14px",
-              color:"#4b5563",
-              lineHeight:1.45,
-              fontSize:14
-            }}>
-              DOE + evolving-SVD search + stochastic robustness validation.
-              The optimizer searches the selected design variables automatically.
-            </p>
-
-            <button
-              disabled={busy}
-              style={{
-                ...primaryButtonStyle,
-                width:"100%",
-                opacity:busy ? 0.55 : 1
-              }}
-              onClick={runOptimize}
-            >
-              {runningAction
-                === "Running robust optimization"
-                ? "Optimization running..."
-                : "Run automated optimization"}
-            </button>
-          </div>
-
-          <div style={{
-            border:"1px solid #ddd6fe",
-            borderRadius:16,
-            padding:18,
-            background:"linear-gradient(180deg,#ffffff,#fbfaff)",
-            boxShadow:"0 5px 16px rgba(109,40,217,.045)"
-          }}>
-            <div style={{
-              fontSize:12,
-              fontWeight:800,
-              color:"#6d28d9",
-              letterSpacing:".06em",
-              textTransform:"uppercase"
-            }}>
-              Manual optimization
-            </div>
-
-            <h3 style={{
-              margin:"6px 0 8px"
-            }}>
-              Manual SVD Explorer
-            </h3>
-
-            <p style={{
-              margin:"0 0 14px",
-              color:"#4b5563",
-              lineHeight:1.45,
-              fontSize:14
-            }}>
-              Inspect stochastic SVD modes, choose a direction and step size,
-              simulate the change, and iteratively navigate the design space.
-            </p>
-
-            <button
-              disabled={busy || !model}
-              style={{
-                ...accentButtonStyle,
-                width:"100%",
-                opacity:busy || !model ? 0.55 : 1
-              }}
-              onClick={openManualSvd}
-            >
-              Open Manual SVD Explorer
-            </button>
-          </div>
-        </div>
-
-        <div style={{
-          marginTop:16,
-          paddingTop:16,
-          borderTop:"1px solid #e5e7eb"
-        }}>
-          <div style={{fontSize:11,fontWeight:800,letterSpacing:".06em",textTransform:"uppercase",color:"#64748b",marginBottom:4}}>Step 3 · Compare</div>
-          <div style={{fontSize:13,color:"#64748b",marginBottom:10}}>
-            Review the selected TO-BE design against the AS-IS baseline.
-          </div>
-
-          <button
-            disabled={busy}
-            style={{
-              ...primaryButtonStyle,
-              opacity:busy ? 0.55 : 1
-            }}
-            onClick={runCompare}
-          >
-            Compare AS-IS vs TO-BE
-          </button>
-        </div>
-      </section>
-
-      {model &&
-        <section style={{
-          ...card,
-          marginTop:18
-        }}>
-          <h2 style={{
-            marginTop:0
-          }}>
-            {model.name}
-          </h2>
-
-          {(model.arrival_profile?.length > 0 ||
-            (model.resources || []).some(r => r.staffing_profile?.length || r.skills?.length)) &&
-            <div style={{
-              margin:"-4px 0 14px",
-              padding:"10px 12px",
-              border:"1px solid #dbeafe",
-              borderRadius:10,
-              background:"#f8fbff",
-              fontSize:12,
-              color:"#475569"
-            }}>
-              {model.arrival_profile?.length > 0
-                ? `Time-varying arrivals: ${model.arrival_profile.length} interval(s). `
-                : ""}
-              {(model.resources || []).some(r => r.staffing_profile?.length)
-                ? "Time-varying staffing enabled. "
-                : ""}
-              {(model.resources || []).some(r => r.skills?.length)
-                ? "Skill-based resource routing enabled where configured."
-                : ""}
-            </div>
-          }
-
-          <div style={{
-            display:"flex",
-            gap:8,
-            flexWrap:"wrap"
-          }}>
-            {(model.activities || []).map(
-              a =>
-              <div
-                key={a.id}
-                style={{
-                  padding:"10px 14px",
-                  border:
-                    "1px solid #d1d5db",
-                  borderRadius:10
-                }}
-              >
-                <b>{a.name}</b>
-
-                <div style={{
-                  fontSize:12,
-                  color:"#6b7280"
-                }}>
-                  {
-                    fmtMin(
-                      a.service_time
-                      ?.mean_minutes
-                    )
-                  } min
-                </div>
-              </div>
-            )}
-          </div>
-        </section>
-      }
-
 
       {workflowClass === "contact_center" &&
         <section style={{
@@ -2281,6 +2081,13 @@ export default function Home() {
           </p>
 
           <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:14}}>
+            <button
+              disabled={busy}
+              style={{...primaryButtonStyle,opacity:busy ? 0.55 : 1}}
+              onClick={loadContactCenterSample}
+            >
+              Load sample Contact Center
+            </button>
             <a href="/templates/contact_center_template.xlsx" download style={buttonStyle}>
               Download blank Excel template
             </a>
@@ -2372,6 +2179,16 @@ export default function Home() {
           service-time estimates, arrival rate, and observed
           resource counts, then creates an editable process model.
         </p>
+
+        <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:14}}>
+          <button
+            disabled={busy}
+            style={{...buttonStyle,opacity:busy ? 0.55 : 1}}
+            onClick={loadModel}
+          >
+            Load sample General Process
+          </button>
+        </div>
 
         <div style={{
           display:"flex",
@@ -2607,6 +2424,242 @@ export default function Home() {
       </section>
 
       }
+
+      <section style={{
+        ...card,
+        marginTop:18
+      }}>
+        <div style={{fontSize:11,fontWeight:800,letterSpacing:".06em",textTransform:"uppercase",color:"#6366f1",marginBottom:6}}>Step 2 · Baseline</div>
+        <h2 style={{margin:"0 0 6px",fontSize:21,letterSpacing:"-.015em"}}>
+          Run the AS-IS simulation
+        </h2>
+        <p style={{marginTop:0,color:"#4b5563",lineHeight:1.5}}>
+          After loading or calibrating a valid model, run the baseline simulation before optimization.
+        </p>
+        <button
+          disabled={busy || !model}
+          style={{...primaryButtonStyle,opacity:busy || !model ? 0.55 : 1}}
+          onClick={runSimulation}
+        >
+          Run baseline simulation
+        </button>
+      </section>
+
+      <section style={{
+        ...card,
+        marginTop:18
+      }}>
+        <div style={{fontSize:11,fontWeight:800,letterSpacing:".06em",textTransform:"uppercase",color:"#6366f1",marginBottom:6}}>Step 3 · Optimize</div>
+        <h2 style={{
+          margin:"0 0 6px",fontSize:21,letterSpacing:"-.015em"
+        }}>
+          Choose optimization approach
+        </h2>
+
+        <p style={{
+          marginTop:0,
+          marginBottom:16,
+          color:"#4b5563",
+          lineHeight:1.5
+        }}>
+          Automated and manual optimization are alternative paths to a TO-BE design.
+          You can use either approach after defining the design variables.
+        </p>
+
+        <div style={{
+          display:"grid",
+          gridTemplateColumns:
+            "repeat(auto-fit,minmax(280px,1fr))",
+          gap:14
+        }}>
+          <div style={{
+            border:"1px solid #dbeafe",
+            borderRadius:16,
+            padding:18,
+            background:"linear-gradient(180deg,#ffffff,#f8fbff)",
+            boxShadow:"0 5px 16px rgba(37,99,235,.045)"
+          }}>
+            <div style={{
+              fontSize:12,
+              fontWeight:800,
+              color:"#1d4ed8",
+              letterSpacing:".06em",
+              textTransform:"uppercase"
+            }}>
+              Automated optimization
+            </div>
+
+            <h3 style={{
+              margin:"6px 0 8px"
+            }}>
+              Architecture-family search
+            </h3>
+
+            <p style={{
+              margin:"0 0 14px",
+              color:"#4b5563",
+              lineHeight:1.45,
+              fontSize:14
+            }}>
+              DOE + evolving-SVD search + stochastic robustness validation.
+              The optimizer searches the selected design variables automatically.
+            </p>
+
+            <button
+              disabled={busy || !model}
+              style={{
+                ...primaryButtonStyle,
+                width:"100%",
+                opacity:busy || !model ? 0.55 : 1
+              }}
+              onClick={runOptimize}
+            >
+              {runningAction
+                === "Running robust optimization"
+                ? "Optimization running..."
+                : "Run automated optimization"}
+            </button>
+          </div>
+
+          <div style={{
+            border:"1px solid #ddd6fe",
+            borderRadius:16,
+            padding:18,
+            background:"linear-gradient(180deg,#ffffff,#fbfaff)",
+            boxShadow:"0 5px 16px rgba(109,40,217,.045)"
+          }}>
+            <div style={{
+              fontSize:12,
+              fontWeight:800,
+              color:"#6d28d9",
+              letterSpacing:".06em",
+              textTransform:"uppercase"
+            }}>
+              Manual optimization
+            </div>
+
+            <h3 style={{
+              margin:"6px 0 8px"
+            }}>
+              Manual SVD Explorer
+            </h3>
+
+            <p style={{
+              margin:"0 0 14px",
+              color:"#4b5563",
+              lineHeight:1.45,
+              fontSize:14
+            }}>
+              Inspect stochastic SVD modes, choose a direction and step size,
+              simulate the change, and iteratively navigate the design space.
+            </p>
+
+            <button
+              disabled={busy || !model}
+              style={{
+                ...accentButtonStyle,
+                width:"100%",
+                opacity:busy || !model ? 0.55 : 1
+              }}
+              onClick={openManualSvd}
+            >
+              Open Manual SVD Explorer
+            </button>
+          </div>
+        </div>
+
+        <div style={{
+          marginTop:16,
+          paddingTop:16,
+          borderTop:"1px solid #e5e7eb"
+        }}>
+          <div style={{fontSize:11,fontWeight:800,letterSpacing:".06em",textTransform:"uppercase",color:"#64748b",marginBottom:4}}>Step 4 · Compare</div>
+          <div style={{fontSize:13,color:"#64748b",marginBottom:10}}>
+            Review the selected TO-BE design against the AS-IS baseline.
+          </div>
+
+          <button
+            disabled={busy}
+            style={{
+              ...primaryButtonStyle,
+              opacity:busy ? 0.55 : 1
+            }}
+            onClick={runCompare}
+          >
+            Compare AS-IS vs TO-BE
+          </button>
+        </div>
+      </section>
+
+      {model &&
+        <section style={{
+          ...card,
+          marginTop:18
+        }}>
+          <h2 style={{
+            marginTop:0
+          }}>
+            {model.name}
+          </h2>
+
+          {(model.arrival_profile?.length > 0 ||
+            (model.resources || []).some(r => r.staffing_profile?.length || r.skills?.length)) &&
+            <div style={{
+              margin:"-4px 0 14px",
+              padding:"10px 12px",
+              border:"1px solid #dbeafe",
+              borderRadius:10,
+              background:"#f8fbff",
+              fontSize:12,
+              color:"#475569"
+            }}>
+              {model.arrival_profile?.length > 0
+                ? `Time-varying arrivals: ${model.arrival_profile.length} interval(s). `
+                : ""}
+              {(model.resources || []).some(r => r.staffing_profile?.length)
+                ? "Time-varying staffing enabled. "
+                : ""}
+              {(model.resources || []).some(r => r.skills?.length)
+                ? "Skill-based resource routing enabled where configured."
+                : ""}
+            </div>
+          }
+
+          <div style={{
+            display:"flex",
+            gap:8,
+            flexWrap:"wrap"
+          }}>
+            {(model.activities || []).map(
+              a =>
+              <div
+                key={a.id}
+                style={{
+                  padding:"10px 14px",
+                  border:
+                    "1px solid #d1d5db",
+                  borderRadius:10
+                }}
+              >
+                <b>{a.name}</b>
+
+                <div style={{
+                  fontSize:12,
+                  color:"#6b7280"
+                }}>
+                  {
+                    fmtMin(
+                      a.service_time
+                      ?.mean_minutes
+                    )
+                  } min
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+      }
+
 
       {model &&
         <section style={{
