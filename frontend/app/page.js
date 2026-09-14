@@ -757,6 +757,16 @@ export default function Home() {
   ] = useState("Ready");
 
   const [
+    workflowClass,
+    setWorkflowClass
+  ] = useState("general");
+
+  const [
+    contactCenterPreview,
+    setContactCenterPreview
+  ] = useState(null);
+
+  const [
     runningAction,
     setRunningAction
   ] = useState(null);
@@ -1613,6 +1623,59 @@ export default function Home() {
     );
   }
 
+  async function previewContactCenterWorkbook() {
+    if (!logFile) {
+      setStatus("Choose a Contact Center Excel workbook first");
+      return;
+    }
+
+    try {
+      const form = new FormData();
+      form.append("file", logFile);
+
+      const data = await call(
+        "/api/contact-center/preview",
+        { method:"POST", body:form },
+        "Validating Contact Center workbook"
+      );
+
+      setContactCenterPreview(data);
+      setStatus("Contact Center workbook is valid");
+    } catch(e) {
+      setContactCenterPreview(null);
+      setStatus(e.message);
+    }
+  }
+
+  async function importContactCenterWorkbook() {
+    if (!logFile) {
+      setStatus("Choose a Contact Center Excel workbook first");
+      return;
+    }
+
+    try {
+      const form = new FormData();
+      form.append("file", logFile);
+
+      const data = await call(
+        "/api/contact-center/import",
+        { method:"POST", body:form },
+        "Building Contact Center model"
+      );
+
+      setModel(data.model);
+      setCalibration(data.summary);
+      setSim(null);
+      setOpt(null);
+      setCmp(null);
+      setManualCommitted(null);
+      setContactCenterPreview(null);
+      setStatus("Contact Center model loaded");
+    } catch(e) {
+      setStatus(e.message);
+    }
+  }
+
   async function previewEventLog() {
     if (!logFile) {
       setStatus(
@@ -1924,36 +1987,56 @@ export default function Home() {
         </p>
 
         <div style={{
+          display:"grid",
+          gridTemplateColumns:"minmax(220px,320px) 1fr",
+          gap:14,
+          alignItems:"end",
+          margin:"16px 0"
+        }}>
+          <label style={{fontSize:12,color:"#475569",fontWeight:700}}>
+            Workflow class
+            <select
+              value={workflowClass}
+              onChange={e => {
+                const next = e.target.value;
+                setWorkflowClass(next);
+                setLogFile(null);
+                setLogPreview(null);
+                setContactCenterPreview(null);
+                setCalibration(null);
+              }}
+              style={{display:"block",width:"100%",marginTop:6}}
+            >
+              <option value="general">General Process</option>
+              <option value="contact_center">Contact Center</option>
+            </select>
+          </label>
+
+          <div style={{fontSize:13,color:"#64748b",lineHeight:1.45}}>
+            {workflowClass === "contact_center"
+              ? "Contact Center uses a standard multi-sheet Excel workbook for events, agent skills, staffing, and interval arrivals."
+              : "General Process uses the existing event-log format for activities, timestamps, resources, routing, and service-time calibration."}
+          </div>
+        </div>
+
+        <div style={{
           display:"flex",
           gap:10,
           flexWrap:"wrap"
         }}>
-          <button
-            disabled={busy}
-            style={{
-              ...buttonStyle,
-              opacity:busy ? 0.55 : 1
-            }}
-            onClick={loadModel}
-          >
-            Load demo model
-          </button>
-
-          <label style={{
-            ...buttonStyle,
-            display:"inline-flex",
-            alignItems:"center",
-            opacity:busy ? 0.55 : 1
-          }}>
-            Load model JSON
-            <input
-              type="file"
-              accept=".json,application/json"
+          {workflowClass === "general" &&
+            <button
               disabled={busy}
-              onChange={loadModelJsonFile}
-              style={{display:"none"}}
-            />
-          </label>
+              style={{
+                ...buttonStyle,
+                opacity:busy ? 0.55 : 1
+              }}
+              onClick={loadModel}
+            >
+              Load demo model
+            </button>
+          }
+
 
           <button
             disabled={busy}
@@ -2184,6 +2267,92 @@ export default function Home() {
       }
 
 
+      {workflowClass === "contact_center" &&
+        <section style={{
+          ...card,
+          marginTop:18
+        }}>
+          <h2 style={{marginTop:0}}>Contact Center Excel import</h2>
+
+          <p style={{color:"#4b5563",lineHeight:1.5}}>
+            Use the standard Excel workbook. Operations teams populate the sheets;
+            the app validates the workbook and converts it to the internal process model.
+            JSON is not required for external data collection.
+          </p>
+
+          <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:14}}>
+            <a href="/templates/contact_center_template.xlsx" download style={buttonStyle}>
+              Download blank Excel template
+            </a>
+            <a href="/templates/contact_center_sample.xlsx" download style={buttonStyle}>
+              Download sample Excel workbook
+            </a>
+          </div>
+
+          <div style={{
+            padding:"12px 14px",
+            background:"#f8fafc",
+            border:"1px solid #e2e8f0",
+            borderRadius:10,
+            fontSize:12,
+            color:"#475569",
+            marginBottom:14
+          }}>
+            Required sheets: <b>Events</b>, <b>Agent_Skills</b>, <b>Staffing</b>, <b>Arrivals</b>.
+            Optional: <b>Settings</b>. The Events sheet uses one row per workflow event;
+            SERVICE_START and SERVICE_END share the same interaction_id and contact_leg_id.
+          </div>
+
+          <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"center"}}>
+            <input
+              type="file"
+              accept=".xlsx,.xls"
+              disabled={busy}
+              onChange={e => {
+                setLogFile(e.target.files?.[0] || null);
+                setContactCenterPreview(null);
+                setCalibration(null);
+              }}
+            />
+
+            <button
+              disabled={busy || !logFile}
+              style={{...buttonStyle,opacity:busy || !logFile ? 0.55 : 1}}
+              onClick={previewContactCenterWorkbook}
+            >
+              Validate workbook
+            </button>
+
+            <button
+              disabled={busy || !logFile}
+              style={{...primaryButtonStyle,opacity:busy || !logFile ? 0.55 : 1}}
+              onClick={importContactCenterWorkbook}
+            >
+              Build Contact Center model
+            </button>
+          </div>
+
+          {contactCenterPreview &&
+            <div style={{marginTop:14,fontSize:13,color:"#166534",fontWeight:700}}>
+              Workbook valid · {Object.entries(contactCenterPreview.sheets || {}).map(
+                ([name,info]) => `${name}: ${info.rows} rows`
+              ).join(" · ")}
+            </div>
+          }
+
+          {calibration?.workflow_class === "contact_center" &&
+            <div style={{marginTop:14,fontSize:13,color:"#475569",lineHeight:1.6}}>
+              Imported {calibration.interactions} interaction(s), {calibration.service_legs} service leg(s),
+              {" "}{calibration.activities} workflow activity/queue(s), and {calibration.resource_pools} resource pool(s).
+              {calibration.warnings?.length
+                ? ` ${calibration.warnings.length} activity/queue(s) have sparse service-time data and were flagged.`
+                : " Service-time data is adequately populated for the observed queues."}
+            </div>
+          }
+        </section>
+      }
+
+      {workflowClass === "general" &&
       <section style={{
         ...card,
         marginTop:18
@@ -2436,6 +2605,8 @@ export default function Home() {
           </div>
         }
       </section>
+
+      }
 
       {model &&
         <section style={{

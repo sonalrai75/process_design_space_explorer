@@ -101,6 +101,7 @@ class Architecture(BaseModel):
 
 
 class ProcessModel(BaseModel):
+    workflow_class: Literal['general', 'contact_center'] = 'general'
     id: str = 'process-1'
     name: str = 'Process Model'
     start_activity: str
