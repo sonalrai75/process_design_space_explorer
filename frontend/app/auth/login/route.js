@@ -9,34 +9,38 @@ function safeNext(value) {
   ) ? value : "/";
 }
 
-function configuredPassword() {
-  return String(process.env.APP_PASSWORD || "").trim();
-}
-
 export async function POST(request) {
-  const form = await request.formData();
-  const entered = String(form.get("password") || "").trim();
-  const next = safeNext(String(form.get("next") || "/"));
-  const password = configuredPassword();
+  let entered = "";
+  let next = "/";
+
+  const contentType = request.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    const body = await request.json().catch(() => ({}));
+    entered = String(body?.password || "");
+    next = safeNext(String(body?.next || "/"));
+  } else {
+    const form = await request.formData();
+    entered = String(form.get("password") || "");
+    next = safeNext(String(form.get("next") || "/"));
+  }
+
+  const password = String(process.env.APP_PASSWORD || "");
 
   if (!password) {
-    const url = new URL("/login", request.url);
-    url.searchParams.set("config", "missing");
-    return NextResponse.redirect(url, 303);
+    return NextResponse.json(
+      { ok: false, code: "missing_config", message: "APP_PASSWORD is not configured on this deployment." },
+      { status: 503 }
+    );
   }
 
   if (entered !== password) {
-    const url = new URL("/login", request.url);
-    url.searchParams.set("error", "1");
-    if (next !== "/") url.searchParams.set("next", next);
-    return NextResponse.redirect(url, 303);
+    return NextResponse.json(
+      { ok: false, code: "incorrect_password", message: "Incorrect password. Try again." },
+      { status: 401 }
+    );
   }
 
-  const response = NextResponse.redirect(
-    new URL(next, request.url),
-    303
-  );
-
+  const response = NextResponse.json({ ok: true, next });
   response.cookies.set({
     name: GATE_COOKIE,
     value: await gateToken(password),
