@@ -1158,6 +1158,7 @@ export default function Home() {
 
   const [selectedActivityId,setSelectedActivityId] = useState(null);
   const [selectedTransitionIndex,setSelectedTransitionIndex] = useState(null);
+  const [skillMatrixOpen,setSkillMatrixOpen] = useState(false);
 
   useEffect(() => {
     if (!runningAction) {
@@ -1744,6 +1745,78 @@ export default function Home() {
 
       return next;
     });
+  }
+
+  function modelSkillColumns(m) {
+    const values = new Set();
+
+    (m?.resources || []).forEach(r =>
+      (r.skills || []).forEach(s => {
+        const v = String(s || "").trim();
+        if (v) values.add(v);
+      })
+    );
+
+    (m?.activities || []).forEach(a =>
+      (a.required_skills || []).forEach(s => {
+        const v = String(s || "").trim();
+        if (v) values.add(v);
+      })
+    );
+
+    return Array.from(values).sort((a,b) => a.localeCompare(b));
+  }
+
+  function recomputeSkillEligibility(next) {
+    const resources = Array.isArray(next?.resources) ? next.resources : [];
+    const skillMap = Object.fromEntries(
+      resources.map(r => [r.id, new Set(r.skills || [])])
+    );
+
+    return {
+      ...next,
+      activities:(next.activities || []).map(a => {
+        const required = Array.isArray(a.required_skills)
+          ? a.required_skills.filter(Boolean)
+          : [];
+        if (!required.length) return a;
+
+        const eligible = resources
+          .filter(r => required.every(skill => skillMap[r.id]?.has(skill)))
+          .map(r => r.id);
+
+        return {
+          ...a,
+          eligible_resource_pools:eligible,
+          routing_policy:eligible.length > 1
+            ? "earliest_available_skill"
+            : a.routing_policy
+        };
+      })
+    };
+  }
+
+  function toggleResourceSkill(resourceId,skill) {
+    setModel(prev => {
+      if (!prev) return prev;
+      const next = {
+        ...prev,
+        resources:(prev.resources || []).map(r => {
+          if (r.id !== resourceId) return r;
+          const current = new Set(r.skills || []);
+          if (current.has(skill)) current.delete(skill);
+          else current.add(skill);
+          return {
+            ...r,
+            skills:Array.from(current).sort((a,b) => String(a).localeCompare(String(b)))
+          };
+        })
+      };
+      return recomputeSkillEligibility(next);
+    });
+    setSim(null);
+    setOpt(null);
+    setCmp(null);
   }
 
   function addActivity() {
@@ -3140,6 +3213,20 @@ export default function Home() {
                 Add transition
               </button>
 
+              {modelSkillColumns(model).length > 0 &&
+                <button
+                  disabled={busy}
+                  style={{
+                    ...buttonStyle,
+                    background:skillMatrixOpen ? "#eef2ff" : "#fff",
+                    borderColor:skillMatrixOpen ? "#a5b4fc" : "#d1d5db"
+                  }}
+                  onClick={() => setSkillMatrixOpen(x => !x)}
+                >
+                  {skillMatrixOpen ? "Hide skill matrix" : "Skill matrix"}
+                </button>
+              }
+
               <button
                 disabled={busy}
                 style={buttonStyle}
@@ -3167,6 +3254,63 @@ export default function Home() {
               }}
             />
           </div>
+
+          {skillMatrixOpen && modelSkillColumns(model).length > 0 &&
+            <div style={{...card,marginTop:12,background:"#f8fafc"}}>
+              <div style={{fontWeight:800}}>Editable skill matrix</div>
+              <div style={{fontSize:12,color:"#64748b",marginTop:4,lineHeight:1.45}}>
+                Rows are modeled resources/resource pools and columns are defined skills.
+                Check or clear a box to represent cross-training. The active model updates
+                immediately; rerun Simulation or Optimization to evaluate the effect.
+              </div>
+
+              <div style={{overflowX:"auto",marginTop:12}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                  <thead>
+                    <tr>
+                      <th style={{textAlign:"left",padding:"7px 8px",position:"sticky",left:0,background:"#f8fafc",zIndex:1,borderBottom:"1px solid #e2e8f0"}}>
+                        Resource / pool
+                      </th>
+                      {modelSkillColumns(model).map(skill =>
+                        <th key={skill} style={{textAlign:"center",padding:"7px 10px",whiteSpace:"nowrap",borderBottom:"1px solid #e2e8f0"}}>
+                          {skill}
+                        </th>
+                      )}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(model.resources || []).map(r =>
+                      <tr key={r.id}>
+                        <td style={{padding:"8px",fontWeight:700,position:"sticky",left:0,background:"#f8fafc",borderBottom:"1px solid #e2e8f0",whiteSpace:"nowrap"}}>
+                          {r.name || r.id}
+                          <div style={{fontSize:10,color:"#94a3b8",fontWeight:400}}>{r.id}</div>
+                        </td>
+                        {modelSkillColumns(model).map(skill => {
+                          const checked=(r.skills || []).includes(skill);
+                          return (
+                            <td key={`${r.id}-${skill}`} style={{textAlign:"center",padding:"8px 10px",borderBottom:"1px solid #e2e8f0"}}>
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleResourceSkill(r.id,skill)}
+                                aria-label={`${r.name || r.id}: ${skill}`}
+                              />
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <div style={{marginTop:10,padding:"9px 10px",borderRadius:8,background:"#fff",border:"1px solid #e2e8f0",fontSize:11,color:"#475569",lineHeight:1.45}}>
+                Skill edits recalculate each skill-constrained activity's eligible resource pools.
+                Cross-training therefore changes which pools can serve those activities in the next
+                simulation or optimization run.
+              </div>
+            </div>
+          }
 
           {(selectedActivityId || selectedTransitionIndex !== null) &&
             <div style={{...card,marginTop:12,background:"#f8fafc"}}>
