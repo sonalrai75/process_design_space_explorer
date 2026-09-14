@@ -90,6 +90,19 @@ class ResourcePool(BaseModel):
     staffing_profile: list[StaffingInterval] = Field(default_factory=list)
 
 
+class ResourceAgent(BaseModel):
+    # Individual resource/agent. The pool remains the staffing/cost envelope,
+    # while the agent carries the skill mix used for skill-based routing.
+    id: str
+    name: str | None = None
+    resource_pool: str
+    skills: list[str] = Field(default_factory=list)
+    skill_proficiency: dict[str, float] = Field(default_factory=dict)
+    cost_per_hour: float | None = None
+    active: bool = True
+    synthetic: bool = False
+
+
 class Architecture(BaseModel):
     id: str
     name: str
@@ -105,6 +118,7 @@ class ProcessModel(BaseModel):
     end_activity: str
     activities: list[Activity]
     resources: list[ResourcePool]
+    agents: list[ResourceAgent] = Field(default_factory=list)
     architectures: list[Architecture]
     variables: list[DesignVariable]
     arrival_rate_per_hour: float = 6.0
@@ -118,3 +132,6 @@ class ProcessModel(BaseModel):
 
     def resource_map(self):
         return {r.id: r for r in self.resources}
+
+    def agent_map(self):
+        return {a.id: a for a in self.agents}

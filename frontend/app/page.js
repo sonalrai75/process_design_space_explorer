@@ -1750,6 +1750,13 @@ export default function Home() {
   function modelSkillColumns(m) {
     const values = new Set();
 
+    (m?.agents || []).forEach(a =>
+      (a.skills || []).forEach(s => {
+        const v = String(s || "").trim();
+        if (v) values.add(v);
+      })
+    );
+
     (m?.resources || []).forEach(r =>
       (r.skills || []).forEach(s => {
         const v = String(s || "").trim();
@@ -1767,28 +1774,84 @@ export default function Home() {
     return Array.from(values).sort((a,b) => a.localeCompare(b));
   }
 
+  function skillMatrixRows(m) {
+    if (Array.isArray(m?.agents) && m.agents.length) {
+      return m.agents.map(a => ({
+        ...a,
+        _matrixType:"agent"
+      }));
+    }
+
+    return (m?.resources || []).map(r => ({
+      ...r,
+      resource_pool:r.id,
+      _matrixType:"pool"
+    }));
+  }
+
   function recomputeSkillEligibility(next) {
     const resources = Array.isArray(next?.resources) ? next.resources : [];
-    const skillMap = Object.fromEntries(
-      resources.map(r => [r.id, new Set(r.skills || [])])
+    const agents = Array.isArray(next?.agents) ? next.agents : [];
+
+    let updatedResources = resources;
+
+    if (agents.length) {
+      const skillsByPool = {};
+      agents
+        .filter(a => a.active !== false)
+        .forEach(a => {
+          if (!skillsByPool[a.resource_pool]) {
+            skillsByPool[a.resource_pool] = new Set();
+          }
+          (a.skills || []).forEach(skill =>
+            skillsByPool[a.resource_pool].add(skill)
+          );
+        });
+
+      updatedResources = resources.map(r => ({
+        ...r,
+        skills:Array.from(
+          skillsByPool[r.id] || new Set(r.skills || [])
+        ).sort((a,b) => String(a).localeCompare(String(b)))
+      }));
+    }
+
+    const poolSkillMap = Object.fromEntries(
+      updatedResources.map(r => [r.id, new Set(r.skills || [])])
     );
 
     return {
       ...next,
+      resources:updatedResources,
       activities:(next.activities || []).map(a => {
         const required = Array.isArray(a.required_skills)
           ? a.required_skills.filter(Boolean)
           : [];
         if (!required.length) return a;
 
-        const eligible = resources
-          .filter(r => required.every(skill => skillMap[r.id]?.has(skill)))
-          .map(r => r.id);
+        let eligible;
+
+        if (agents.length) {
+          eligible = Array.from(new Set(
+            agents
+              .filter(agent =>
+                agent.active !== false
+                && required.every(skill =>
+                  (agent.skills || []).includes(skill)
+                )
+              )
+              .map(agent => agent.resource_pool)
+          )).sort();
+        } else {
+          eligible = updatedResources
+            .filter(r => required.every(skill => poolSkillMap[r.id]?.has(skill)))
+            .map(r => r.id);
+        }
 
         return {
           ...a,
           eligible_resource_pools:eligible,
-          routing_policy:eligible.length > 1
+          routing_policy:eligible.length > 1 || required.length
             ? "earliest_available_skill"
             : a.routing_policy
         };
@@ -1796,13 +1859,40 @@ export default function Home() {
     };
   }
 
-  function toggleResourceSkill(resourceId,skill) {
+  function toggleMatrixSkill(rowId,skill) {
     setModel(prev => {
       if (!prev) return prev;
+
+      if (Array.isArray(prev.agents) && prev.agents.length) {
+        const next = {
+          ...prev,
+          agents:prev.agents.map(a => {
+            if (a.id !== rowId) return a;
+            const current = new Set(a.skills || []);
+            const proficiency = {...(a.skill_proficiency || {})};
+
+            if (current.has(skill)) {
+              current.delete(skill);
+              delete proficiency[skill];
+            } else {
+              current.add(skill);
+              proficiency[skill] = 1.0;
+            }
+
+            return {
+              ...a,
+              skills:Array.from(current).sort((x,y) => String(x).localeCompare(String(y))),
+              skill_proficiency:proficiency
+            };
+          })
+        };
+        return recomputeSkillEligibility(next);
+      }
+
       const next = {
         ...prev,
         resources:(prev.resources || []).map(r => {
-          if (r.id !== resourceId) return r;
+          if (r.id !== rowId) return r;
           const current = new Set(r.skills || []);
           if (current.has(skill)) current.delete(skill);
           else current.add(skill);
@@ -1813,6 +1903,30 @@ export default function Home() {
         })
       };
       return recomputeSkillEligibility(next);
+    });
+    setSim(null);
+    setOpt(null);
+    setCmp(null);
+  }
+
+  function updateAgentProficiency(agentId,skill,value) {
+    const numeric = Math.min(1,Math.max(0.25,Number(value) || 1));
+    setModel(prev => {
+      if (!prev) return prev;
+      return recomputeSkillEligibility({
+        ...prev,
+        agents:(prev.agents || []).map(a =>
+          a.id === agentId
+          ? {
+              ...a,
+              skill_proficiency:{
+                ...(a.skill_proficiency || {}),
+                [skill]:numeric
+              }
+            }
+          : a
+        )
+      });
     });
     setSim(null);
     setOpt(null);
@@ -3257,11 +3371,14 @@ export default function Home() {
 
           {skillMatrixOpen && modelSkillColumns(model).length > 0 &&
             <div style={{...card,marginTop:12,background:"#f8fafc"}}>
-              <div style={{fontWeight:800}}>Editable skill matrix</div>
+              <div style={{fontWeight:800}}>
+                Editable skill matrix
+              </div>
               <div style={{fontSize:12,color:"#64748b",marginTop:4,lineHeight:1.45}}>
-                Rows are modeled resources/resource pools and columns are defined skills.
-                Check or clear a box to represent cross-training. The active model updates
-                immediately; rerun Simulation or Optimization to evaluate the effect.
+                {Array.isArray(model.agents) && model.agents.length
+                  ? "Rows are individual resources/agents and columns are skills. Cross-train a specific person by checking a skill. Proficiency from 0.25 to 1.00 affects that person's modeled service time."
+                  : "Rows are resource pools and columns are skills. Check or clear a skill assignment to change pool eligibility."}
+                {" "}Rerun Simulation or Optimization after edits to evaluate the effect.
               </div>
 
               <div style={{overflowX:"auto",marginTop:12}}>
@@ -3269,7 +3386,9 @@ export default function Home() {
                   <thead>
                     <tr>
                       <th style={{textAlign:"left",padding:"7px 8px",position:"sticky",left:0,background:"#f8fafc",zIndex:1,borderBottom:"1px solid #e2e8f0"}}>
-                        Resource / pool
+                        {Array.isArray(model.agents) && model.agents.length
+                          ? "Individual resource"
+                          : "Resource pool"}
                       </th>
                       {modelSkillColumns(model).map(skill =>
                         <th key={skill} style={{textAlign:"center",padding:"7px 10px",whiteSpace:"nowrap",borderBottom:"1px solid #e2e8f0"}}>
@@ -3279,22 +3398,43 @@ export default function Home() {
                     </tr>
                   </thead>
                   <tbody>
-                    {(model.resources || []).map(r =>
-                      <tr key={r.id}>
+                    {skillMatrixRows(model).map(row =>
+                      <tr key={row.id}>
                         <td style={{padding:"8px",fontWeight:700,position:"sticky",left:0,background:"#f8fafc",borderBottom:"1px solid #e2e8f0",whiteSpace:"nowrap"}}>
-                          {r.name || r.id}
-                          <div style={{fontSize:10,color:"#94a3b8",fontWeight:400}}>{r.id}</div>
+                          {row.name || row.id}
+                          <div style={{fontSize:10,color:"#94a3b8",fontWeight:400}}>
+                            {row._matrixType === "agent"
+                              ? `${row.id} · ${row.resource_pool}${row.synthetic ? " · unspecified staffing slot" : ""}`
+                              : row.id}
+                          </div>
                         </td>
                         {modelSkillColumns(model).map(skill => {
-                          const checked=(r.skills || []).includes(skill);
+                          const checked=(row.skills || []).includes(skill);
+                          const proficiency = checked && row._matrixType === "agent"
+                            ? Number(row.skill_proficiency?.[skill] ?? 1)
+                            : null;
                           return (
-                            <td key={`${r.id}-${skill}`} style={{textAlign:"center",padding:"8px 10px",borderBottom:"1px solid #e2e8f0"}}>
+                            <td key={`${row.id}-${skill}`} style={{textAlign:"center",padding:"6px 8px",borderBottom:"1px solid #e2e8f0",minWidth:92}}>
                               <input
                                 type="checkbox"
                                 checked={checked}
-                                onChange={() => toggleResourceSkill(r.id,skill)}
-                                aria-label={`${r.name || r.id}: ${skill}`}
+                                onChange={() => toggleMatrixSkill(row.id,skill)}
+                                aria-label={`${row.name || row.id}: ${skill}`}
                               />
+                              {checked && row._matrixType === "agent" &&
+                                <div style={{marginTop:4}}>
+                                  <input
+                                    type="number"
+                                    min="0.25"
+                                    max="1"
+                                    step="0.05"
+                                    value={proficiency}
+                                    onChange={e => updateAgentProficiency(row.id,skill,e.target.value)}
+                                    title="Skill proficiency; 1.00 is baseline speed"
+                                    style={{width:58,fontSize:10,padding:"2px 3px",textAlign:"center"}}
+                                  />
+                                </div>
+                              }
                             </td>
                           );
                         })}
@@ -3305,9 +3445,9 @@ export default function Home() {
               </div>
 
               <div style={{marginTop:10,padding:"9px 10px",borderRadius:8,background:"#fff",border:"1px solid #e2e8f0",fontSize:11,color:"#475569",lineHeight:1.45}}>
-                Skill edits recalculate each skill-constrained activity's eligible resource pools.
-                Cross-training therefore changes which pools can serve those activities in the next
-                simulation or optimization run.
+                {Array.isArray(model.agents) && model.agents.length
+                  ? "The simulator now allocates work to individual eligible agents. Pool staffing profiles determine how many agent slots are active at each interval. Cross-training therefore changes the number and identity of resources that can serve a skill. Lower proficiency increases service time for that agent until training reaches baseline proficiency 1.00."
+                  : "Skill edits recalculate each skill-constrained activity's eligible resource pools and affect the next simulation/optimization run."}
               </div>
             </div>
           }

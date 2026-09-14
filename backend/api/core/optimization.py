@@ -136,22 +136,48 @@ def calculate_structural_capacity(
         activity_visits[aid] = visit_ratio
 
         act = amap[aid]
-        rid = act.resource_pool
-
-        if not rid:
-            continue
-
         mean_service = (
             float(act.service_time.mean_minutes)
             * service_multiplier
         )
+        demand_minutes = model.arrival_rate_per_hour * visit_ratio * mean_service
 
-        workload[rid] = (
-            workload.get(rid, 0.0)
-            + model.arrival_rate_per_hour
-            * visit_ratio
-            * mean_service
-        )
+        candidate_pools = list(act.eligible_resource_pools or [])
+        if act.required_skills and model.agents:
+            required = set(act.required_skills)
+            candidate_pools = sorted({
+                a.resource_pool
+                for a in model.agents
+                if a.active and required.issubset(set(a.skills or [])) and a.resource_pool in capacities
+            })
+        if not candidate_pools and act.resource_pool:
+            candidate_pools = [act.resource_pool]
+        candidate_pools = [rid for rid in candidate_pools if rid in capacities]
+        if not candidate_pools:
+            continue
+
+        effective_caps = {}
+        for rid in candidate_pools:
+            cap = max(float(capacities[rid]), 0.0)
+            if act.required_skills and model.agents:
+                required = set(act.required_skills)
+                capable = sum(
+                    1
+                    for agent in model.agents
+                    if agent.active
+                    and agent.resource_pool == rid
+                    and required.issubset(set(agent.skills or []))
+                )
+                cap = min(cap, float(capable))
+            effective_caps[rid] = cap
+
+        usable = [rid for rid in candidate_pools if effective_caps.get(rid, 0.0) > 0]
+        if not usable:
+            continue
+        total_cap = sum(effective_caps[rid] for rid in usable)
+        for rid in usable:
+            share = effective_caps[rid] / total_cap if total_cap > 0 else (1.0 / len(usable))
+            workload[rid] = workload.get(rid, 0.0) + demand_minutes * share
 
     resource_utilizations = {}
 

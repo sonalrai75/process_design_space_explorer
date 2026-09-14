@@ -281,6 +281,97 @@ def _eligible_resource_ids(model: ProcessModel, activity, capacities: dict[str, 
     return candidates
 
 
+def _agent_slots(model: ProcessModel, capacities: dict[str, int]):
+    # Returns explicit/synthetic one-server slots grouped by pool. Existing
+    # individual agents are preserved; additional design capacity receives
+    # anonymous slots carrying the pool's aggregate skill set.
+    grouped = defaultdict(list)
+    for agent in model.agents:
+        if agent.active and agent.resource_pool in capacities:
+            grouped[agent.resource_pool].append(agent)
+
+    slots = {}
+    for rid, cap in capacities.items():
+        pool = model.resource_map().get(rid)
+        if pool is None:
+            continue
+        listed = sorted(grouped.get(rid, []), key=lambda a: a.id)
+        target = _max_staffing_capacity(model, pool, int(cap))
+        rows = []
+        for idx, agent in enumerate(listed):
+            rows.append({
+                'id': agent.id,
+                'name': agent.name or agent.id,
+                'pool': rid,
+                'slot_idx': idx,
+                'skills': set(agent.skills or []),
+                'proficiency': dict(agent.skill_proficiency or {}),
+                'synthetic': bool(agent.synthetic),
+            })
+        for idx in range(len(rows), target):
+            rows.append({
+                'id': f'{rid}__design_slot_{idx+1:02d}',
+                'name': f'{pool.name} design slot {idx+1}',
+                'pool': rid,
+                'slot_idx': idx,
+                'skills': set(pool.skills or []),
+                'proficiency': {skill: 1.0 for skill in (pool.skills or [])},
+                'synthetic': True,
+            })
+        slots[rid] = rows
+    return slots
+
+
+def _next_active_time_for_agent(model: ProcessModel, pool: ResourcePool, slot_idx: int, earliest: float, designed_capacity: int) -> float:
+    return _next_active_time_for_slot(model, pool, slot_idx, earliest, designed_capacity)
+
+
+def _eligible_agent_slots(model: ProcessModel, activity, capacities: dict[str, int], slots_by_pool: dict):
+    required = set(activity.required_skills or [])
+    explicit_pools = set(activity.eligible_resource_pools or [])
+    candidates = []
+    for rid, rows in slots_by_pool.items():
+        # When required skills exist, individual skills are authoritative and
+        # explicit pool eligibility is treated as derived metadata. Without a
+        # skill requirement, preserve the configured pool restriction.
+        if not required:
+            if explicit_pools and rid not in explicit_pools:
+                continue
+            if not explicit_pools and activity.resource_pool and rid != activity.resource_pool:
+                continue
+        for row in rows:
+            if required and not required.issubset(row['skills']):
+                continue
+            candidates.append(row)
+    return candidates
+
+
+def _agent_proficiency_multiplier(activity, slot: dict) -> float:
+    required = list(activity.required_skills or [])
+    if not required:
+        return 1.0
+    profs = [float(slot['proficiency'].get(skill, 1.0)) for skill in required]
+    # Proficiency=1 is baseline. Lower proficiency lengthens service time.
+    p = min(profs) if profs else 1.0
+    p = min(1.0, max(0.25, p))
+    return 1.0 / p
+
+
+def _integrated_agent_minutes(model: ProcessModel, pool: ResourcePool, slot_idx: int, designed_capacity: int, start: float, end: float) -> float:
+    if end <= start:
+        return 0.0
+    if not pool.staffing_profile:
+        return (end - start) if slot_idx < max(0, designed_capacity) else 0.0
+    total = 0.0
+    cur = start
+    while cur < end - 1e-9:
+        boundary = min(end, _next_staffing_boundary(model, pool, cur))
+        if slot_idx < _scaled_staffing_capacity(model, pool, cur, designed_capacity):
+            total += max(0.0, boundary - cur)
+        cur = boundary + 1e-9
+    return total
+
+
 def _pool_service_start(model: ProcessModel, pool: ResourcePool, server_free: dict, rid: str, earliest: float, designed_capacity: int):
     best = (float('inf'), None)
     for idx, free_at in enumerate(server_free[rid]):
@@ -315,6 +406,13 @@ def simulate(model: ProcessModel, architecture_id: str, design: dict[str, float]
     for t in cfg['transitions']:
         by_source[t.source].append(t)
 
+    use_individual_agents = bool(model.agents)
+    slots_by_pool = _agent_slots(model, capacities) if use_individual_agents else {}
+    agent_free = {
+        row['id']: 0.0
+        for rows in slots_by_pool.values()
+        for row in rows
+    }
     server_free = {
         rid: [0.0 for _ in range(_max_staffing_capacity(model, rmap[rid], int(cap)))]
         for rid, cap in capacities.items()
@@ -325,6 +423,7 @@ def simulate(model: ProcessModel, architecture_id: str, design: dict[str, float]
     activity_busy = defaultdict(float)
     activity_count = defaultdict(int)
     resource_service_intervals = []
+    agent_service_intervals = []
 
     now_arrival = 0.0
     base_dt = datetime(2026, 1, 5, 0, 0, tzinfo=timezone.utc)
@@ -349,24 +448,55 @@ def simulate(model: ProcessModel, architecture_id: str, design: dict[str, float]
             server_idx = None
             start = t
 
-            eligible = _eligible_resource_ids(model, act, capacities)
-            if eligible:
-                best = (float('inf'), None, None)
-                for rid in eligible:
-                    if rid not in server_free or rid not in rmap:
-                        continue
-                    candidate, idx = _pool_service_start(model, rmap[rid], server_free, rid, t, int(capacities[rid]))
-                    tie = 0 if rid == act.resource_pool else 1
-                    if (candidate, tie) < (best[0], 0 if best[1] == act.resource_pool else 1):
-                        best = (candidate, rid, idx)
-                if best[1] is None or not np.isfinite(best[0]):
-                    raise RuntimeError(f'No staffed eligible resource is available for activity {act.id}.')
-                start, resource, server_idx = best
+            selected_agent = None
+            if use_individual_agents:
+                eligible_agents = _eligible_agent_slots(model, act, capacities, slots_by_pool)
+                if eligible_agents:
+                    best = (float('inf'), None)
+                    for row in eligible_agents:
+                        rid = row['pool']
+                        if rid not in rmap:
+                            continue
+                        candidate = _next_active_time_for_agent(
+                            model,
+                            rmap[rid],
+                            row['slot_idx'],
+                            max(t, agent_free.get(row['id'], 0.0)),
+                            int(capacities[rid]),
+                        )
+                        tie = 0 if rid == act.resource_pool else 1
+                        current_tie = 0 if best[1] and best[1]['pool'] == act.resource_pool else 1
+                        if (candidate, tie, row['id']) < (best[0], current_tie, best[1]['id'] if best[1] else ''):
+                            best = (candidate, row)
+                    if best[1] is None or not np.isfinite(best[0]):
+                        raise RuntimeError(f'No staffed eligible individual resource is available for activity {act.id}.')
+                    start, selected_agent = best
+                    resource = selected_agent['pool']
+            else:
+                eligible = _eligible_resource_ids(model, act, capacities)
+                if eligible:
+                    best = (float('inf'), None, None)
+                    for rid in eligible:
+                        if rid not in server_free or rid not in rmap:
+                            continue
+                        candidate, idx = _pool_service_start(model, rmap[rid], server_free, rid, t, int(capacities[rid]))
+                        tie = 0 if rid == act.resource_pool else 1
+                        if (candidate, tie) < (best[0], 0 if best[1] == act.resource_pool else 1):
+                            best = (candidate, rid, idx)
+                    if best[1] is None or not np.isfinite(best[0]):
+                        raise RuntimeError(f'No staffed eligible resource is available for activity {act.id}.')
+                    start, resource, server_idx = best
 
             svc = _activity_service_minutes(rng, model, current, cfg['service_multiplier'])
+            if selected_agent is not None:
+                svc *= _agent_proficiency_multiplier(act, selected_agent)
             end = start + svc
 
-            if resource:
+            if selected_agent is not None:
+                agent_free[selected_agent['id']] = end
+                resource_service_intervals.append((selected_agent['pool'], start, end))
+                agent_service_intervals.append((selected_agent['id'], selected_agent['pool'], selected_agent['slot_idx'], start, end))
+            elif resource:
                 server_free[resource][server_idx] = end
                 resource_service_intervals.append((resource, start, end))
 
@@ -379,7 +509,8 @@ def simulate(model: ProcessModel, architecture_id: str, design: dict[str, float]
                     'activity': current,
                     'start_time': (base_dt + timedelta(minutes=float(start))).isoformat(),
                     'end_time': (base_dt + timedelta(minutes=float(end))).isoformat(),
-                    'resource': resource or '',
+                    'resource': selected_agent['id'] if selected_agent is not None else (resource or ''),
+                    'resource_pool': selected_agent['pool'] if selected_agent is not None else (resource or ''),
                 })
 
             t = end
@@ -433,6 +564,23 @@ def simulate(model: ProcessModel, architecture_id: str, design: dict[str, float]
         staffed = _integrated_staff_minutes(model, pool, int(designed_capacity), measurement_start, measurement_end)
         resource_utilizations[rid] = float(resource_busy[rid] / staffed) if staffed > 0 else 0.0
 
+    agent_busy = defaultdict(float)
+    for aid, rid, slot_idx, start, end in agent_service_intervals:
+        overlap = max(0.0, min(end, measurement_end) - max(start, measurement_start))
+        agent_busy[aid] += overlap
+
+    agent_utilizations = {}
+    if use_individual_agents:
+        for rid, rows in slots_by_pool.items():
+            pool = rmap.get(rid)
+            if pool is None:
+                continue
+            for row in rows:
+                available = _integrated_agent_minutes(
+                    model, pool, row['slot_idx'], int(capacities[rid]), measurement_start, measurement_end
+                )
+                agent_utilizations[row['id']] = float(agent_busy[row['id']] / available) if available > 0 else 0.0
+
     bottleneck = max(resource_utilizations, key=resource_utilizations.get) if resource_utilizations else None
     max_util = float(resource_utilizations[bottleneck]) if bottleneck else 0.0
 
@@ -485,6 +633,19 @@ def simulate(model: ProcessModel, architecture_id: str, design: dict[str, float]
             }
             for rid in capacities
         ],
+        'agent_stats': [
+            {
+                'agent': row['id'],
+                'name': row['name'],
+                'resource_pool': rid,
+                'skills': sorted(row['skills']),
+                'busy_minutes': float(agent_busy[row['id']]),
+                'utilization': float(agent_utilizations.get(row['id'], 0.0)),
+                'synthetic': bool(row['synthetic']),
+            }
+            for rid, rows in slots_by_pool.items()
+            for row in rows
+        ] if use_individual_agents else [],
         'activity_stats': [
             {'activity': aid, 'events': int(activity_count[aid]), 'busy_minutes': float(activity_busy[aid])}
             for aid in activity_count

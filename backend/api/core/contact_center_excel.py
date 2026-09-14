@@ -188,13 +188,24 @@ def import_contact_center_workbook(filename: str, content: bytes) -> dict:
         events["agent_id"] = ""
 
     agent_pool: dict[str, str] = {}
+    agent_skills: dict[str, set[str]] = defaultdict(set)
+    agent_proficiency: dict[str, dict[str, float]] = defaultdict(dict)
     pool_skills: dict[str, set[str]] = defaultdict(set)
     for _, row in skills.dropna(subset=["agent_id", "resource_pool", "skill"]).iterrows():
         aid = str(row["agent_id"]).strip()
         pool = _safe_id(row["resource_pool"])
         skill = str(row["skill"]).strip()
+        proficiency = 1.0
+        if "proficiency" in skills.columns and pd.notna(row.get("proficiency")):
+            try:
+                proficiency = float(row.get("proficiency"))
+            except Exception:
+                proficiency = 1.0
+        proficiency = min(1.0, max(0.0, proficiency))
         agent_pool[aid] = pool
         if skill:
+            agent_skills[aid].add(skill)
+            agent_proficiency[aid][skill] = proficiency
             pool_skills[pool].add(skill)
 
     pool_profiles: dict[str, list[dict]] = defaultdict(list)
@@ -351,6 +362,49 @@ def import_contact_center_workbook(filename: str, content: bytes) -> dict:
             "staffing_profile": sorted(profile, key=lambda x: x["start_minute"]),
         })
 
+    # Build an individual-resource roster. Agent_Skills provides named agents.
+    # If a staffing profile calls for more concurrent positions than are named,
+    # create explicit 'Unspecified' slots so every modeled FTE can be cross-trained
+    # and inspected in the skill matrix rather than disappearing inside pool capacity.
+    agents = []
+    agents_by_pool: dict[str, list[str]] = defaultdict(list)
+    for aid in sorted(agent_pool):
+        pool = agent_pool[aid]
+        agents_by_pool[pool].append(aid)
+        pool_cost = float(np.mean(pool_costs[pool])) if pool_costs[pool] else None
+        agents.append({
+            "id": aid,
+            "name": aid,
+            "resource_pool": pool,
+            "skills": sorted(agent_skills.get(aid, set())),
+            "skill_proficiency": {
+                skill: float(agent_proficiency.get(aid, {}).get(skill, 1.0))
+                for skill in sorted(agent_skills.get(aid, set()))
+            },
+            "cost_per_hour": pool_cost,
+            "active": True,
+            "synthetic": False,
+        })
+
+    for r in resources:
+        pool = r["id"]
+        required_slots = max(1, int(r["capacity"]))
+        current = len(agents_by_pool.get(pool, []))
+        for slot in range(current + 1, required_slots + 1):
+            aid = f"{pool}__unspecified_{slot:02d}"
+            agents_by_pool[pool].append(aid)
+            skills_for_slot = sorted(pool_skills.get(pool, set()))
+            agents.append({
+                "id": aid,
+                "name": f"Unspecified {r['name']} #{slot}",
+                "resource_pool": pool,
+                "skills": skills_for_slot,
+                "skill_proficiency": {skill: 1.0 for skill in skills_for_slot},
+                "cost_per_hour": r.get("cost_per_hour"),
+                "active": True,
+                "synthetic": True,
+            })
+
     activities = [
         {
             "id": "contact_start",
@@ -436,6 +490,7 @@ def import_contact_center_workbook(filename: str, content: bytes) -> dict:
         "end_activity": "contact_complete",
         "activities": activities,
         "resources": resources,
+        "agents": agents,
         "architectures": [{
             "id": "baseline",
             "name": "Observed Contact Center",
@@ -459,6 +514,7 @@ def import_contact_center_workbook(filename: str, content: bytes) -> dict:
             "service_legs": int(len(starts)),
             "activities": len(queue_ids),
             "resource_pools": len(resources),
+            "individual_resources": len(agents),
             "arrival_intervals": len(arrival_profile),
             "staffing_intervals": int(sum(len(v) for v in pool_profiles.values())),
             "warnings": warnings,
