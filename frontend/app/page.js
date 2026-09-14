@@ -2905,9 +2905,16 @@ export default function Home() {
                 {activeTransitions(model).map(
                   (t,i) =>
                     <tr key={i}>
-                      <td>
+                      <td style={{
+                        padding:"7px 8px 7px 0"
+                      }}>
                         <select
                           value={t.source}
+                          style={{
+                            minWidth:180,
+                            maxWidth:260,
+                            width:"100%"
+                          }}
                           onChange={
                             e =>
                               updateTransition(
@@ -2932,9 +2939,16 @@ export default function Home() {
                         </select>
                       </td>
 
-                      <td>
+                      <td style={{
+                        padding:"7px 8px 7px 0"
+                      }}>
                         <select
                           value={t.target}
+                          style={{
+                            minWidth:180,
+                            maxWidth:260,
+                            width:"100%"
+                          }}
                           onChange={
                             e =>
                               updateTransition(
@@ -2959,14 +2973,23 @@ export default function Home() {
                         </select>
                       </td>
 
-                      <td>
+                      <td style={{
+                        padding:"7px 8px 7px 0"
+                      }}>
                         <input
                           type="number"
                           min="0"
                           max="1"
-                          step="0.01"
+                          step="0.001"
                           value={
-                            t.probability
+                            Number.isFinite(
+                              Number(t.probability)
+                            )
+                            ? Math.round(
+                                Number(t.probability)
+                                * 1000
+                              ) / 1000
+                            : 0
                           }
                           onChange={
                             e =>
@@ -2977,7 +3000,7 @@ export default function Home() {
                               )
                           }
                           style={{
-                            width:90
+                            width:100
                           }}
                         />
                       </td>
