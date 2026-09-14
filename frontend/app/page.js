@@ -883,6 +883,16 @@ export default function Home() {
   ] = useState("Ready");
 
   const [
+    workflowClass,
+    setWorkflowClass
+  ] = useState("general");
+
+  const [
+    contactCenterPreview,
+    setContactCenterPreview
+  ] = useState(null);
+
+  const [
     runningAction,
     setRunningAction
   ] = useState(null);
@@ -1016,6 +1026,59 @@ export default function Home() {
         )
       );
 
+    } catch(e) {
+      setStatus(e.message);
+    }
+  }
+
+
+  async function loadGeneralProcessSample() {
+    try {
+      setStatus("Loading General Process sample");
+
+      const response = await fetch(
+        "/samples/general_process_sample.csv"
+      );
+
+      if (!response.ok) {
+        throw new Error(
+          "Unable to load the General Process sample"
+        );
+      }
+
+      const blob = await response.blob();
+      const sampleFile = new File(
+        [blob],
+        "general_process_sample.csv",
+        { type:"text/csv" }
+      );
+
+      const form = new FormData();
+      form.append("file", sampleFile);
+      form.append("case_col", "CaseID");
+      form.append("activity_col", "Activity");
+      form.append("start_col", "StartTime");
+      form.append("end_col", "EndTime");
+      form.append("resource_col", "Resource");
+      form.append(
+        "sla_minutes",
+        String(model?.sla_minutes || 360)
+      );
+
+      const data = await call(
+        "/api/event-log/calibrate",
+        { method:"POST", body:form },
+        "Loading General Process sample"
+      );
+
+      setModel(data.model);
+      setCalibration(data.summary);
+      setSim(null);
+      setOpt(null);
+      setCmp(null);
+      setLogFile(null);
+      setLogPreview(null);
+      setStatus("General Process sample loaded");
     } catch(e) {
       setStatus(e.message);
     }
@@ -1746,6 +1809,118 @@ export default function Home() {
     );
   }
 
+
+  async function loadContactCenterSample() {
+    try {
+      setStatus(
+        "Loading Contact Center sample workbook"
+      );
+
+      const response = await fetch(
+        "/samples/contact_center_sample.xlsx"
+      );
+
+      if (!response.ok) {
+        throw new Error(
+          "Unable to load the sample workbook"
+        );
+      }
+
+      const blob = await response.blob();
+      const form = new FormData();
+
+      form.append(
+        "file",
+        new File(
+          [blob],
+          "contact_center_sample.xlsx",
+          {
+            type:
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          }
+        )
+      );
+
+      const data = await call(
+        "/api/contact-center/import",
+        { method:"POST", body:form },
+        "Loading Contact Center sample"
+      );
+
+      setModel(data.model);
+      setCalibration(data.summary);
+      setSim(null);
+      setOpt(null);
+      setCmp(null);
+      setContactCenterPreview(null);
+      setLogFile(null);
+      setLogPreview(null);
+      setStatus("Contact Center sample loaded");
+    } catch(e) {
+      setStatus(e.message);
+    }
+  }
+
+  async function previewContactCenterWorkbook() {
+    if (!logFile) {
+      setStatus(
+        "Choose a Contact Center Excel workbook first"
+      );
+      return;
+    }
+
+    try {
+      const form = new FormData();
+      form.append("file", logFile);
+
+      const data = await call(
+        "/api/contact-center/preview",
+        { method:"POST", body:form },
+        "Validating Contact Center workbook"
+      );
+
+      setContactCenterPreview(data);
+      setStatus(
+        "Contact Center workbook is valid"
+      );
+    } catch(e) {
+      setContactCenterPreview(null);
+      setStatus(e.message);
+    }
+  }
+
+  async function importContactCenterWorkbook() {
+    if (!logFile) {
+      setStatus(
+        "Choose a Contact Center Excel workbook first"
+      );
+      return;
+    }
+
+    try {
+      const form = new FormData();
+      form.append("file", logFile);
+
+      const data = await call(
+        "/api/contact-center/import",
+        { method:"POST", body:form },
+        "Building Contact Center model"
+      );
+
+      setModel(data.model);
+      setCalibration(data.summary);
+      setSim(null);
+      setOpt(null);
+      setCmp(null);
+      setContactCenterPreview(null);
+      setStatus(
+        "Contact Center model loaded"
+      );
+    } catch(e) {
+      setStatus(e.message);
+    }
+  }
+
   async function previewEventLog() {
     if (!logFile) {
       setStatus(
@@ -2010,6 +2185,239 @@ export default function Home() {
         </a>
       </div>
 
+
+      <section style={{
+        ...card,
+        marginTop:18
+      }}>
+        <div style={{
+          fontSize:11,
+          fontWeight:800,
+          letterSpacing:".06em",
+          textTransform:"uppercase",
+          color:"#6366f1",
+          marginBottom:6
+        }}>
+          Step 1 · Choose workflow class
+        </div>
+
+        <h2 style={{margin:"0 0 6px"}}>
+          Build the process model
+        </h2>
+
+        <p style={{
+          marginTop:0,
+          color:"#4b5563",
+          lineHeight:1.5
+        }}>
+          Choose the application type first. The data template,
+          importer, and model assumptions change for that workflow class.
+        </p>
+
+        <div style={{
+          display:"grid",
+          gridTemplateColumns:"minmax(220px,320px) 1fr",
+          gap:14,
+          alignItems:"end",
+          marginTop:16
+        }}>
+          <label style={{
+            fontSize:12,
+            color:"#475569",
+            fontWeight:700
+          }}>
+            Workflow class
+            <select
+              value={workflowClass}
+              onChange={e => {
+                const next =
+                  e.target.value;
+                setWorkflowClass(next);
+                setLogFile(null);
+                setLogPreview(null);
+                setContactCenterPreview(null);
+                setCalibration(null);
+              }}
+              style={{
+                display:"block",
+                width:"100%",
+                marginTop:6
+              }}
+            >
+              <option value="general">
+                General Process
+              </option>
+              <option value="contact_center">
+                Contact Center
+              </option>
+            </select>
+          </label>
+
+          <div style={{
+            fontSize:13,
+            color:"#64748b",
+            lineHeight:1.45
+          }}>
+            {workflowClass === "contact_center"
+              ? "Contact Center uses a standard multi-sheet Excel workbook for events, agent skills, staffing, and interval arrivals."
+              : "General Process uses event logs for activities, timestamps, resources, routing, service-time calibration, and hybrid manual modeling."}
+          </div>
+        </div>
+      </section>
+
+      {workflowClass === "contact_center" &&
+        <section style={{
+          ...card,
+          marginTop:18
+        }}>
+          <h2 style={{marginTop:0}}>
+            Contact Center Excel import
+          </h2>
+
+          <p style={{
+            color:"#4b5563",
+            lineHeight:1.5
+          }}>
+            Use the standard multi-sheet workbook. The app validates
+            events, agent skills, staffing profiles, and interval arrivals,
+            then converts them into the common process digital-twin model.
+          </p>
+
+          <div style={{
+            display:"flex",
+            gap:10,
+            flexWrap:"wrap",
+            marginBottom:14
+          }}>
+            <button
+              disabled={busy}
+              style={{
+                ...buttonStyle,
+                opacity:busy ? 0.55 : 1
+              }}
+              onClick={loadContactCenterSample}
+            >
+              Load sample Contact Center
+            </button>
+
+            <a
+              href="/templates/contact_center_template.xlsx"
+              download
+              style={buttonStyle}
+            >
+              Download blank Excel template
+            </a>
+
+            <a
+              href="/samples/contact_center_sample.xlsx"
+              download
+              style={buttonStyle}
+            >
+              Download sample Excel workbook
+            </a>
+          </div>
+
+          <div style={{
+            padding:"12px 14px",
+            background:"#f8fafc",
+            border:"1px solid #e2e8f0",
+            borderRadius:10,
+            fontSize:12,
+            color:"#475569",
+            marginBottom:14
+          }}>
+            Required sheets: <b>Events</b>, <b>Agent_Skills</b>,
+            {" "}<b>Staffing</b>, <b>Arrivals</b>. Optional:
+            {" "}<b>Settings</b>.
+          </div>
+
+          <div style={{
+            display:"flex",
+            gap:10,
+            flexWrap:"wrap",
+            alignItems:"center"
+          }}>
+            <input
+              type="file"
+              accept=".xlsx,.xls"
+              disabled={busy}
+              onChange={e => {
+                setLogFile(
+                  e.target.files?.[0] || null
+                );
+                setContactCenterPreview(null);
+                setCalibration(null);
+              }}
+            />
+
+            <button
+              disabled={busy || !logFile}
+              style={{
+                ...buttonStyle,
+                opacity:
+                  busy || !logFile
+                  ? 0.55
+                  : 1
+              }}
+              onClick={
+                previewContactCenterWorkbook
+              }
+            >
+              Validate workbook
+            </button>
+
+            <button
+              disabled={busy || !logFile}
+              style={{
+                ...buttonStyle,
+                opacity:
+                  busy || !logFile
+                  ? 0.55
+                  : 1
+              }}
+              onClick={
+                importContactCenterWorkbook
+              }
+            >
+              Build Contact Center model
+            </button>
+          </div>
+
+          {contactCenterPreview &&
+            <div style={{
+              marginTop:14,
+              fontSize:13,
+              color:"#166534",
+              fontWeight:700
+            }}>
+              Workbook valid · {
+                Object.entries(
+                  contactCenterPreview.sheets || {}
+                ).map(
+                  ([name,info]) =>
+                    `${name}: ${info.rows} rows`
+                ).join(" · ")
+              }
+            </div>
+          }
+
+          {calibration?.workflow_class === "contact_center" &&
+            <div style={{
+              marginTop:14,
+              fontSize:13,
+              color:"#475569",
+              lineHeight:1.6
+            }}>
+              Imported {calibration.interactions} interaction(s),
+              {" "}{calibration.service_legs} service leg(s),
+              {" "}{calibration.activities} workflow activity/queue(s),
+              and {calibration.resource_pools} resource pool(s).
+            </div>
+          }
+        </section>
+      }
+
+      {workflowClass === "general" &&
       <section style={{
         ...card,
         marginTop:18
@@ -2081,6 +2489,7 @@ export default function Home() {
           </button>
         </div>
       </section>
+      }
 
       {model &&
         <section style={{
@@ -2127,6 +2536,7 @@ export default function Home() {
       }
 
 
+      {workflowClass === "general" &&
       <section style={{
         ...card,
         marginTop:18
@@ -2146,6 +2556,40 @@ export default function Home() {
           service-time estimates, arrival rate, and observed
           resource counts, then creates an editable process model.
         </p>
+
+        <div style={{
+          display:"flex",
+          gap:10,
+          flexWrap:"wrap",
+          marginBottom:14
+        }}>
+          <button
+            disabled={busy}
+            style={{
+              ...buttonStyle,
+              opacity:busy ? 0.55 : 1
+            }}
+            onClick={loadGeneralProcessSample}
+          >
+            Load sample General Process
+          </button>
+
+          <a
+            href="/templates/general_process_template.csv"
+            download
+            style={buttonStyle}
+          >
+            Download blank CSV template
+          </a>
+
+          <a
+            href="/samples/general_process_sample.csv"
+            download
+            style={buttonStyle}
+          >
+            Download sample CSV
+          </a>
+        </div>
 
         <div style={{
           display:"flex",
@@ -2436,6 +2880,7 @@ export default function Home() {
           </div>
         }
       </section>
+      }
 
       {model &&
         <section style={{
