@@ -324,6 +324,15 @@ def calibrate_event_log(
 
     resource_capacity = {r.id: r.capacity for r in resources}
 
+    # Activities that never transition to another observed activity are terminal
+    # milestones. They often have only a single timestamp (for example, Complete)
+    # and therefore should not be treated as under-sampled service operations.
+    observed_successor_sources: set[str] = set()
+    for _, g in work.groupby("case_id", sort=False):
+        acts = g["activity"].astype(str).tolist()
+        observed_successor_sources.update(a for a, _ in zip(acts[:-1], acts[1:]))
+    terminal_activity_names = set(work["activity"].astype(str).unique()) - observed_successor_sources
+
     activities: list[Activity] = []
     service_time_summary: list[dict] = []
     for _, row in stats.iterrows():
@@ -336,7 +345,20 @@ def calibrate_event_log(
             .astype(float)
             .tolist()
         )
+        has_no_timing_data = len(observed) == 0
+        suggested_terminal = name in terminal_activity_names
+        # No usable duration is deliberately left unresolved. A last observed
+        # activity is a plausible terminal/milestone, but it may also be a real
+        # service step whose start/end timestamps were not collected. The model
+        # receives a provisional triangular distribution so it remains valid,
+        # while the UI blocks simulation until the user chooses the treatment.
         service_time = _build_service_time(observed, global_service)
+        if has_no_timing_data:
+            service_time.fallback_reason = (
+                "No valid service-time observations were captured. Confirm this "
+                "activity as a terminal/milestone, enter a triangular distribution, "
+                "or copy the distribution from a similar activity."
+            )
 
         activities.append(
             Activity(
@@ -355,8 +377,10 @@ def calibrate_event_log(
             "mean_service_minutes": float(row["mean_service_minutes"]),
             "median_service_minutes": float(row["median_service_minutes"]),
             "std_service_minutes": float(row["std_service_minutes"]),
-            "distribution": service_time.distribution,
-            "confidence": service_time.confidence,
+            "distribution": "unresolved" if has_no_timing_data else service_time.distribution,
+            "confidence": "insufficient" if has_no_timing_data else service_time.confidence,
+            "timing_role": "unresolved" if has_no_timing_data else "service",
+            "suggested_terminal": bool(suggested_terminal) if has_no_timing_data else False,
             "fallback_reason": service_time.fallback_reason,
         })
 
@@ -554,6 +578,10 @@ def calibrate_event_log(
             "resources": resource_summary,
             "top_variants": top_variants,
             "service_times": service_time_summary,
+            "service_time_unresolved_count": int(sum(
+                1 for item in service_time_summary
+                if item.get("timing_role") == "unresolved"
+            )),
             "service_time_low_confidence_count": int(sum(
                 1 for item in service_time_summary
                 if item.get("confidence") in {"low", "insufficient"}

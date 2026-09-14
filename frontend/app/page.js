@@ -832,6 +832,21 @@ export default function Home() {
     setManualCommitted
   ] = useState(null);
 
+  const [
+    timingDrafts,
+    setTimingDrafts
+  ] = useState({});
+
+  const unresolvedTiming =
+    Array.isArray(calibration?.service_times)
+      ? calibration.service_times.filter(
+          item => item?.timing_role === "unresolved"
+        )
+      : [];
+
+  const timingReady =
+    unresolvedTiming.length === 0;
+
   useEffect(() => {
     try {
       const raw = localStorage.getItem(
@@ -1001,6 +1016,10 @@ export default function Home() {
 
   async function runSimulation() {
     try {
+      if (!timingReady) {
+        setStatus(`Resolve timing assumptions for ${unresolvedTiming.length} activit${unresolvedTiming.length === 1 ? "y" : "ies"} before simulation.`);
+        return;
+      }
       let m = model;
 
       if (!m) {
@@ -1328,6 +1347,183 @@ export default function Home() {
           })
       };
     });
+  }
+
+  function updateTimingDraft(activity, field, value) {
+    setTimingDrafts(prev => ({
+      ...prev,
+      [activity]:{
+        ...(prev[activity] || {}),
+        [field]:value
+      }
+    }));
+  }
+
+  function updateCalibrationTiming(activity, patch) {
+    setCalibration(prev => {
+      if (!prev || !Array.isArray(prev.service_times)) return prev;
+      const service_times = prev.service_times.map(item =>
+        item.activity === activity
+          ? { ...item, ...patch }
+          : item
+      );
+      return {
+        ...prev,
+        service_times,
+        service_time_unresolved_count:
+          service_times.filter(item => item?.timing_role === "unresolved").length,
+        service_time_low_confidence_count:
+          service_times.filter(item => ["low","insufficient"].includes(item?.confidence)).length
+      };
+    });
+  }
+
+  function resolveTimingAsMilestone(activityName) {
+    setModel(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        activities:(prev.activities || []).map(a =>
+          a.name === activityName
+            ? {
+                ...a,
+                resource_pool:null,
+                cost_per_hour:0,
+                service_time:{
+                  distribution:"constant",
+                  mean_minutes:0.01,
+                  std_minutes:0,
+                  samples_minutes:null,
+                  min_minutes:null,
+                  mode_minutes:null,
+                  max_minutes:null,
+                  sample_count:0,
+                  confidence:null,
+                  fallback_reason:"User confirmed terminal/milestone activity; no service time modeled."
+                }
+              }
+            : a
+        )
+      };
+    });
+    updateCalibrationTiming(activityName, {
+      distribution:"instantaneous",
+      confidence:"not_applicable",
+      timing_role:"milestone",
+      resolution:"user_confirmed_terminal",
+      fallback_reason:"User confirmed terminal/milestone activity; no service time modeled."
+    });
+    setStatus(`${activityName} set as terminal / milestone`);
+  }
+
+  function resolveTimingTriangular(activityName) {
+    const summary = (calibration?.service_times || []).find(x => x.activity === activityName);
+    const center = Number(summary?.median_service_minutes || summary?.mean_service_minutes || 5);
+    const draft = timingDrafts[activityName] || {};
+    const lo = Number(draft.min ?? Math.max(0.01, center * 0.5));
+    const mode = Number(draft.mode ?? center);
+    const hi = Number(draft.max ?? Math.max(center * 1.5, lo + 0.01));
+
+    if (![lo,mode,hi].every(Number.isFinite) || lo < 0 || !(lo <= mode && mode <= hi) || hi <= lo) {
+      setStatus(`For ${activityName}, triangular values must satisfy min ≤ mode ≤ max, with max > min.`);
+      return;
+    }
+
+    const mean = (lo + mode + hi) / 3;
+    const variance = (lo*lo + mode*mode + hi*hi - lo*mode - lo*hi - mode*hi) / 18;
+    const stdev = Math.sqrt(Math.max(variance, 0));
+
+    setModel(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        activities:(prev.activities || []).map(a =>
+          a.name === activityName
+            ? {
+                ...a,
+                service_time:{
+                  distribution:"triangular",
+                  mean_minutes:mean,
+                  std_minutes:stdev,
+                  samples_minutes:null,
+                  min_minutes:lo,
+                  mode_minutes:mode,
+                  max_minutes:hi,
+                  sample_count:0,
+                  confidence:"low",
+                  fallback_reason:"User-defined triangular distribution because no timing data was captured."
+                }
+              }
+            : a
+        )
+      };
+    });
+    updateCalibrationTiming(activityName, {
+      distribution:"triangular",
+      confidence:"low",
+      timing_role:"service",
+      resolution:"user_defined_triangular",
+      min_minutes:lo,
+      mode_minutes:mode,
+      max_minutes:hi,
+      mean_service_minutes:mean,
+      fallback_reason:"User-defined triangular distribution because no timing data was captured."
+    });
+    setStatus(`${activityName} timing set to triangular distribution`);
+  }
+
+  function resolveTimingFromSimilar(activityName) {
+    const sourceName = timingDrafts[activityName]?.source;
+    if (!sourceName) {
+      setStatus(`Choose a similar activity for ${activityName}.`);
+      return;
+    }
+    const sourceActivity = (model?.activities || []).find(a => a.name === sourceName);
+    const sourceSummary = (calibration?.service_times || []).find(x => x.activity === sourceName);
+    if (!sourceActivity?.service_time || sourceSummary?.timing_role === "unresolved") {
+      setStatus(`The selected source activity does not have a resolved service-time distribution.`);
+      return;
+    }
+    const copied = JSON.parse(JSON.stringify(sourceActivity.service_time));
+    copied.fallback_reason = `Distribution copied from similar activity: ${sourceName}.`;
+
+    setModel(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        activities:(prev.activities || []).map(a =>
+          a.name === activityName
+            ? { ...a, service_time:copied }
+            : a
+        )
+      };
+    });
+    updateCalibrationTiming(activityName, {
+      distribution:sourceSummary?.distribution || copied.distribution,
+      confidence:sourceSummary?.confidence || copied.confidence || "low",
+      timing_role:"service",
+      resolution:"copied_from_similar_activity",
+      inherited_from:sourceName,
+      mean_service_minutes:copied.mean_minutes,
+      fallback_reason:`Distribution copied from similar activity: ${sourceName}.`
+    });
+    setStatus(`${activityName} now uses the distribution from ${sourceName}`);
+  }
+
+  function resolvedTimingSources(targetName) {
+    const unresolved = new Set(
+      (calibration?.service_times || [])
+        .filter(x => x?.timing_role === "unresolved")
+        .map(x => x.activity)
+    );
+    return (model?.activities || [])
+      .filter(a =>
+        a.name !== targetName
+        && a.name !== "Process End"
+        && !unresolved.has(a.name)
+        && a.service_time
+        && a.service_time.distribution !== "constant"
+      );
   }
 
   function updateTransition(
@@ -2436,10 +2632,10 @@ export default function Home() {
               <div style={{marginTop:14}}>
                 <div style={{display:"flex",justifyContent:"space-between",gap:12,alignItems:"center",flexWrap:"wrap",marginBottom:8}}>
                   <b style={{fontSize:13}}>Service-time calibration</b>
-                  <span style={{fontSize:12,color:(calibration.service_time_low_confidence_count || 0) > 0 ? "#b45309" : "#64748b"}}>
-                    {(calibration.service_time_low_confidence_count || 0) > 0
-                      ? `${calibration.service_time_low_confidence_count} activit${calibration.service_time_low_confidence_count === 1 ? "y" : "ies"} need review`
-                      : "All activities sufficiently sampled"}
+                  <span style={{fontSize:12,color:unresolvedTiming.length > 0 ? "#b45309" : "#64748b",fontWeight:unresolvedTiming.length > 0 ? 700 : 400}}>
+                    {unresolvedTiming.length > 0
+                      ? `${unresolvedTiming.length} activit${unresolvedTiming.length === 1 ? "y requires" : "ies require"} a timing decision`
+                      : "All activity timing assumptions resolved"}
                   </span>
                 </div>
                 <div style={{overflowX:"auto"}}>
@@ -2448,6 +2644,7 @@ export default function Home() {
                       <tr>
                         <th align="left" style={{padding:"7px 6px",borderBottom:"1px solid #e2e8f0"}}>Activity</th>
                         <th align="right" style={{padding:"7px 6px",borderBottom:"1px solid #e2e8f0"}}>n</th>
+                        <th align="left" style={{padding:"7px 6px",borderBottom:"1px solid #e2e8f0"}}>Timing status</th>
                         <th align="left" style={{padding:"7px 6px",borderBottom:"1px solid #e2e8f0"}}>Simulation distribution</th>
                         <th align="left" style={{padding:"7px 6px",borderBottom:"1px solid #e2e8f0"}}>Confidence</th>
                       </tr>
@@ -2456,20 +2653,93 @@ export default function Home() {
                       {calibration.service_times.map((s, i) =>
                         <tr key={`${s.activity}-${i}`}>
                           <td style={{padding:"7px 6px",borderBottom:"1px solid #f1f5f9"}}>{s.activity}</td>
-                          <td align="right" style={{padding:"7px 6px",borderBottom:"1px solid #f1f5f9"}}>{s.valid_service_observations ?? 0}</td>
+                          <td align="right" style={{padding:"7px 6px",borderBottom:"1px solid #f1f5f9"}}>{s.timing_role === "milestone" ? "—" : (s.valid_service_observations ?? 0)}</td>
+                          <td style={{padding:"7px 6px",borderBottom:"1px solid #f1f5f9",fontWeight:600,color:s.timing_role === "unresolved" ? "#b45309" : "#475569"}}>
+                            {s.timing_role === "unresolved"
+                              ? "Needs decision"
+                              : s.timing_role === "milestone"
+                              ? "Terminal / milestone"
+                              : s.resolution === "copied_from_similar_activity"
+                              ? `Copied from ${s.inherited_from}`
+                              : "Observed / resolved"}
+                          </td>
                           <td style={{padding:"7px 6px",borderBottom:"1px solid #f1f5f9"}}>
-                            {s.distribution === "empirical" ? "Empirical bootstrap" : s.distribution === "triangular" ? "Triangular fallback" : s.distribution}
+                            {s.distribution === "unresolved"
+                              ? "Not yet assigned"
+                              : s.distribution === "instantaneous"
+                              ? "Instantaneous milestone"
+                              : s.distribution === "empirical"
+                              ? "Empirical bootstrap"
+                              : s.distribution === "triangular"
+                              ? "Triangular"
+                              : s.distribution}
                           </td>
                           <td style={{padding:"7px 6px",borderBottom:"1px solid #f1f5f9",color:s.confidence === "insufficient" || s.confidence === "low" ? "#b45309" : "#475569",fontWeight:600}}>
-                            {s.confidence || "—"}
+                            {s.confidence === "not_applicable" ? "N/A" : (s.confidence || "—")}
                           </td>
                         </tr>
                       )}
                     </tbody>
                   </table>
                 </div>
+
+                {unresolvedTiming.length > 0 &&
+                  <div style={{marginTop:14,display:"grid",gap:12}}>
+                    <div style={{fontSize:12,color:"#92400e",background:"#fffbeb",border:"1px solid #fde68a",borderRadius:10,padding:"10px 12px",lineHeight:1.5}}>
+                      No observed duration does not mean zero duration. Resolve each activity before simulation. You can confirm it as a terminal/milestone, define a triangular service-time distribution, or reuse the distribution from a similar resolved activity.
+                    </div>
+                    {unresolvedTiming.map(item => {
+                      const center = Number(item.median_service_minutes || item.mean_service_minutes || 5);
+                      const draft = timingDrafts[item.activity] || {};
+                      const sources = resolvedTimingSources(item.activity);
+                      return (
+                        <div key={`timing-${item.activity}`} style={{border:"1px solid #fed7aa",background:"#fffaf5",borderRadius:12,padding:14}}>
+                          <div style={{display:"flex",justifyContent:"space-between",gap:10,alignItems:"center",flexWrap:"wrap",marginBottom:10}}>
+                            <div>
+                              <b>{item.activity}</b>
+                              <div style={{fontSize:11,color:"#78716c",marginTop:2}}>
+                                No valid service-time observations.{item.suggested_terminal ? " This activity appears at the end of observed cases, but confirmation is required." : ""}
+                              </div>
+                            </div>
+                            <button style={buttonStyle} onClick={() => resolveTimingAsMilestone(item.activity)}>
+                              Terminal / milestone
+                            </button>
+                          </div>
+
+                          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))",gap:8,alignItems:"end"}}>
+                            <label style={{fontSize:11,color:"#475569"}}>Triangular min (min)
+                              <input type="number" min="0" step="0.1" value={draft.min ?? Number(Math.max(0.01, center * 0.5).toFixed(1))} onChange={e => updateTimingDraft(item.activity,"min",e.target.value)} style={{width:"100%",marginTop:4}} />
+                            </label>
+                            <label style={{fontSize:11,color:"#475569"}}>Most likely (min)
+                              <input type="number" min="0" step="0.1" value={draft.mode ?? Number(center.toFixed(1))} onChange={e => updateTimingDraft(item.activity,"mode",e.target.value)} style={{width:"100%",marginTop:4}} />
+                            </label>
+                            <label style={{fontSize:11,color:"#475569"}}>Triangular max (min)
+                              <input type="number" min="0" step="0.1" value={draft.max ?? Number(Math.max(center * 1.5, center + 0.1).toFixed(1))} onChange={e => updateTimingDraft(item.activity,"max",e.target.value)} style={{width:"100%",marginTop:4}} />
+                            </label>
+                            <button style={buttonStyle} onClick={() => resolveTimingTriangular(item.activity)}>
+                              Use triangular
+                            </button>
+                          </div>
+
+                          <div style={{display:"flex",gap:8,alignItems:"end",flexWrap:"wrap",marginTop:10,paddingTop:10,borderTop:"1px solid #ffedd5"}}>
+                            <label style={{fontSize:11,color:"#475569",minWidth:220,flex:"1 1 260px"}}>Use distribution from similar activity
+                              <select value={draft.source || ""} onChange={e => updateTimingDraft(item.activity,"source",e.target.value)} style={{width:"100%",marginTop:4}}>
+                                <option value="">Select activity...</option>
+                                {sources.map(a => <option key={a.id} value={a.name}>{a.name}</option>)}
+                              </select>
+                            </label>
+                            <button disabled={!sources.length} style={{...buttonStyle,opacity:sources.length ? 1 : 0.55}} onClick={() => resolveTimingFromSimilar(item.activity)}>
+                              Copy distribution
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                }
+
                 <div style={{fontSize:11,color:"#64748b",marginTop:8,lineHeight:1.45}}>
-                  Empirical bootstrap preserves the observed service-time shape. Activities with fewer than 10 valid observations use a triangular fallback and are flagged for review.
+                  Empirical bootstrap preserves the observed service-time shape. Sparse observed samples may use a triangular fallback. Activities with no valid timing data require an explicit modeling decision before simulation.
                 </div>
               </div>
             }
@@ -2490,9 +2760,14 @@ export default function Home() {
         <p style={{marginTop:0,color:"#4b5563",lineHeight:1.5}}>
           After loading or calibrating a valid model, run the baseline simulation before optimization.
         </p>
+        {!timingReady &&
+          <div style={{margin:"0 0 12px",padding:"9px 11px",border:"1px solid #fde68a",borderRadius:9,background:"#fffbeb",color:"#92400e",fontSize:12}}>
+            Resolve timing assumptions for {unresolvedTiming.length} activit{unresolvedTiming.length === 1 ? "y" : "ies"} in Service-time calibration before running simulation.
+          </div>
+        }
         <button
-          disabled={busy || !model}
-          style={{...primaryButtonStyle,opacity:busy || !model ? 0.55 : 1}}
+          disabled={busy || !model || !timingReady}
+          style={{...primaryButtonStyle,opacity:busy || !model || !timingReady ? 0.55 : 1}}
           onClick={runSimulation}
         >
           Run baseline simulation
@@ -2560,11 +2835,11 @@ export default function Home() {
             </p>
 
             <button
-              disabled={busy || !model}
+              disabled={busy || !model || !timingReady}
               style={{
                 ...primaryButtonStyle,
                 width:"100%",
-                opacity:busy || !model ? 0.55 : 1
+                opacity:busy || !model || !timingReady ? 0.55 : 1
               }}
               onClick={runOptimize}
             >
@@ -2609,11 +2884,11 @@ export default function Home() {
             </p>
 
             <button
-              disabled={busy || !model}
+              disabled={busy || !model || !timingReady}
               style={{
                 ...accentButtonStyle,
                 width:"100%",
-                opacity:busy || !model ? 0.55 : 1
+                opacity:busy || !model || !timingReady ? 0.55 : 1
               }}
               onClick={openManualSvd}
             >
