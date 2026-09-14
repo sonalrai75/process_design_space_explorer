@@ -928,6 +928,54 @@ export default function Home() {
     }
   }
 
+  async function loadGeneralProcessSample() {
+    try {
+      setStatus("Loading General Process sample");
+
+      const response = await fetch(
+        "/samples/general_process_sample.csv"
+      );
+
+      if (!response.ok) {
+        throw new Error("Unable to load the General Process sample");
+      }
+
+      const blob = await response.blob();
+      const sampleFile = new File(
+        [blob],
+        "general_process_sample.csv",
+        { type:"text/csv" }
+      );
+
+      const form = new FormData();
+      form.append("file", sampleFile);
+      form.append("case_col", "CaseID");
+      form.append("activity_col", "Activity");
+      form.append("start_col", "StartTime");
+      form.append("end_col", "EndTime");
+      form.append("resource_col", "Resource");
+      form.append("sla_minutes", String(model?.sla_minutes || 360));
+
+      const data = await call(
+        "/api/event-log/calibrate",
+        { method:"POST", body:form },
+        "Loading General Process sample"
+      );
+
+      setModel(data.model);
+      setCalibration(data.summary);
+      setSim(null);
+      setOpt(null);
+      setCmp(null);
+      setManualCommitted(null);
+      setLogFile(null);
+      setLogPreview(null);
+      setStatus("General Process sample loaded");
+    } catch(e) {
+      setStatus(e.message);
+    }
+  }
+
   async function loadModelJsonFile(event) {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -1628,7 +1676,7 @@ export default function Home() {
       setStatus("Loading Contact Center sample workbook");
 
       const response = await fetch(
-        "/templates/contact_center_sample.xlsx"
+        "/samples/contact_center_sample.xlsx"
       );
 
       if (!response.ok) {
@@ -2091,7 +2139,7 @@ export default function Home() {
             <a href="/templates/contact_center_template.xlsx" download style={buttonStyle}>
               Download blank Excel template
             </a>
-            <a href="/templates/contact_center_sample.xlsx" download style={buttonStyle}>
+            <a href="/samples/contact_center_sample.xlsx" download style={buttonStyle}>
               Download sample Excel workbook
             </a>
           </div>
@@ -2184,10 +2232,16 @@ export default function Home() {
           <button
             disabled={busy}
             style={{...buttonStyle,opacity:busy ? 0.55 : 1}}
-            onClick={loadModel}
+            onClick={loadGeneralProcessSample}
           >
             Load sample General Process
           </button>
+          <a href="/templates/general_process_template.csv" download style={buttonStyle}>
+            Download blank CSV template
+          </a>
+          <a href="/samples/general_process_sample.csv" download style={buttonStyle}>
+            Download sample CSV
+          </a>
         </div>
 
         <div style={{
