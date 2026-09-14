@@ -83,6 +83,98 @@ def _is_system_resource(label: str) -> bool:
     return n in {"system", "automation", "automated", "robot", "bot", "rpa", "machine"}
 
 
+def _build_service_time(
+    samples: list[float],
+    global_service: float,
+) -> ServiceTime:
+    """Create a simulation distribution from observed activity durations.
+
+    Policy:
+      * n >= 30: empirical bootstrap, high confidence
+      * 10 <= n < 30: empirical bootstrap, moderate confidence
+      * 3 <= n < 10: triangular fallback, low confidence
+      * n < 3: triangular fallback around sparse observations/global median,
+        explicitly marked insufficient
+    """
+    vals = np.asarray(
+        [float(x) for x in samples if np.isfinite(x) and float(x) > 0],
+        dtype=float,
+    )
+    n = int(len(vals))
+
+    if n:
+        mean = float(np.mean(vals))
+        median = float(np.median(vals))
+        std = float(np.std(vals, ddof=1)) if n > 1 else 0.0
+    else:
+        mean = median = max(float(global_service), 0.01)
+        std = 0.0
+
+    if n >= 30:
+        return ServiceTime(
+            distribution="empirical",
+            mean_minutes=max(mean, 0.01),
+            std_minutes=max(std, 0.0),
+            samples_minutes=[float(x) for x in vals.tolist()],
+            sample_count=n,
+            confidence="high",
+        )
+
+    if n >= 10:
+        return ServiceTime(
+            distribution="empirical",
+            mean_minutes=max(mean, 0.01),
+            std_minutes=max(std, 0.0),
+            samples_minutes=[float(x) for x in vals.tolist()],
+            sample_count=n,
+            confidence="moderate",
+            fallback_reason="Empirical bootstrap retained with a moderate sample-size warning.",
+        )
+
+    if n >= 3:
+        lo = max(float(np.min(vals)), 0.01)
+        mode = max(median, 0.01)
+        hi = max(float(np.max(vals)), lo + 0.01)
+        if hi - lo < max(0.10 * mode, 0.10):
+            spread = max(0.20 * mode, 0.10)
+            lo = max(0.01, mode - spread)
+            hi = mode + spread
+        return ServiceTime(
+            distribution="triangular",
+            mean_minutes=max(mean, 0.01),
+            std_minutes=max(std, 0.0),
+            min_minutes=lo,
+            mode_minutes=min(max(mode, lo), hi),
+            max_minutes=hi,
+            sample_count=n,
+            confidence="low",
+            fallback_reason="Fewer than 10 valid observations; triangular fallback used.",
+        )
+
+    center = max(median if n else float(global_service), 0.01)
+    if n == 2:
+        observed_lo = max(float(np.min(vals)), 0.01)
+        observed_hi = max(float(np.max(vals)), observed_lo + 0.01)
+        pad = max(0.25 * center, 0.10)
+        lo = max(0.01, min(observed_lo, center - pad))
+        hi = max(observed_hi, center + pad)
+    else:
+        lo = max(0.01, 0.50 * center)
+        hi = max(lo + 0.01, 1.50 * center)
+
+    return ServiceTime(
+        distribution="triangular",
+        mean_minutes=center,
+        std_minutes=0.0,
+        min_minutes=lo,
+        mode_minutes=center,
+        max_minutes=hi,
+        sample_count=n,
+        confidence="insufficient",
+        fallback_reason="Fewer than 3 valid observations; broad triangular fallback requires review.",
+    )
+
+
 def _activity_resource_assignment(work: pd.DataFrame, activity_ids: dict[str, str]):
     assignment: dict[str, str | None] = {}
     pool_performers: dict[str, set[str]] = defaultdict(set)
@@ -233,22 +325,40 @@ def calibrate_event_log(
     resource_capacity = {r.id: r.capacity for r in resources}
 
     activities: list[Activity] = []
+    service_time_summary: list[dict] = []
     for _, row in stats.iterrows():
         name = str(row["activity"])
         pool = assignment.get(name)
+
+        observed = (
+            work.loc[work["activity"] == name, "service_minutes"]
+            .dropna()
+            .astype(float)
+            .tolist()
+        )
+        service_time = _build_service_time(observed, global_service)
+
         activities.append(
             Activity(
                 id=id_map[name],
                 name=name,
                 resource_pool=pool,
-                service_time=ServiceTime(
-                    distribution="lognormal" if float(row["std_service_minutes"]) > 0 else "constant",
-                    mean_minutes=float(row["mean_service_minutes"]),
-                    std_minutes=float(row["std_service_minutes"]),
-                ),
+                service_time=service_time,
                 cost_per_hour=float(default_resource_cost_per_hour) if pool else 0.0,
             )
         )
+
+        service_time_summary.append({
+            "activity": name,
+            "events": int(row["events"]),
+            "valid_service_observations": int(service_time.sample_count or 0),
+            "mean_service_minutes": float(row["mean_service_minutes"]),
+            "median_service_minutes": float(row["median_service_minutes"]),
+            "std_service_minutes": float(row["std_service_minutes"]),
+            "distribution": service_time.distribution,
+            "confidence": service_time.confidence,
+            "fallback_reason": service_time.fallback_reason,
+        })
 
     activities.append(
         Activity(
@@ -443,9 +553,11 @@ def calibrate_event_log(
             "estimated_resource_capacities": resource_capacity,
             "resources": resource_summary,
             "top_variants": top_variants,
-            "service_times": stats[[
-                "activity", "events", "mean_service_minutes", "median_service_minutes", "std_service_minutes"
-            ]].replace({np.nan: None}).to_dict(orient="records"),
+            "service_times": service_time_summary,
+            "service_time_low_confidence_count": int(sum(
+                1 for item in service_time_summary
+                if item.get("confidence") in {"low", "insufficient"}
+            )),
             "routing": [
                 {
                     "source": source,

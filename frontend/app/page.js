@@ -2329,6 +2329,48 @@ export default function Home() {
               }. The calibrated model is now the active
               model used by Simulation and Optimization.
             </div>
+
+            {Array.isArray(calibration.service_times) && calibration.service_times.length > 0 &&
+              <div style={{marginTop:14}}>
+                <div style={{display:"flex",justifyContent:"space-between",gap:12,alignItems:"center",flexWrap:"wrap",marginBottom:8}}>
+                  <b style={{fontSize:13}}>Service-time calibration</b>
+                  <span style={{fontSize:12,color:(calibration.service_time_low_confidence_count || 0) > 0 ? "#b45309" : "#64748b"}}>
+                    {(calibration.service_time_low_confidence_count || 0) > 0
+                      ? `${calibration.service_time_low_confidence_count} activit${calibration.service_time_low_confidence_count === 1 ? "y" : "ies"} need review`
+                      : "All activities sufficiently sampled"}
+                  </span>
+                </div>
+                <div style={{overflowX:"auto"}}>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                    <thead>
+                      <tr>
+                        <th align="left" style={{padding:"7px 6px",borderBottom:"1px solid #e2e8f0"}}>Activity</th>
+                        <th align="right" style={{padding:"7px 6px",borderBottom:"1px solid #e2e8f0"}}>n</th>
+                        <th align="left" style={{padding:"7px 6px",borderBottom:"1px solid #e2e8f0"}}>Simulation distribution</th>
+                        <th align="left" style={{padding:"7px 6px",borderBottom:"1px solid #e2e8f0"}}>Confidence</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {calibration.service_times.map((s, i) =>
+                        <tr key={`${s.activity}-${i}`}>
+                          <td style={{padding:"7px 6px",borderBottom:"1px solid #f1f5f9"}}>{s.activity}</td>
+                          <td align="right" style={{padding:"7px 6px",borderBottom:"1px solid #f1f5f9"}}>{s.valid_service_observations ?? 0}</td>
+                          <td style={{padding:"7px 6px",borderBottom:"1px solid #f1f5f9"}}>
+                            {s.distribution === "empirical" ? "Empirical bootstrap" : s.distribution === "triangular" ? "Triangular fallback" : s.distribution}
+                          </td>
+                          <td style={{padding:"7px 6px",borderBottom:"1px solid #f1f5f9",color:s.confidence === "insufficient" || s.confidence === "low" ? "#b45309" : "#475569",fontWeight:600}}>
+                            {s.confidence || "—"}
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                <div style={{fontSize:11,color:"#64748b",marginTop:8,lineHeight:1.45}}>
+                  Empirical bootstrap preserves the observed service-time shape. Activities with fewer than 10 valid observations use a triangular fallback and are flagged for review.
+                </div>
+              </div>
+            }
           </div>
         }
       </section>

@@ -5,12 +5,41 @@ from datetime import datetime, timedelta, timezone
 import math
 import numpy as np
 
-from .model import ProcessModel
+from .model import ProcessModel, ServiceTime
 
 
-def _rng_service_minutes(rng: np.random.Generator, distribution: str, mean: float, std: float) -> float:
-    mean = max(mean, 0.01)
-    std = max(std, 0.0)
+def _rng_service_minutes(
+    rng: np.random.Generator,
+    service_time: ServiceTime,
+    multiplier: float = 1.0,
+) -> float:
+    """Sample a service duration from the calibrated activity model."""
+    multiplier = max(float(multiplier), 0.0)
+    distribution = service_time.distribution
+    mean = max(float(service_time.mean_minutes) * multiplier, 0.01)
+    std = max(float(service_time.std_minutes) * multiplier, 0.0)
+
+    if distribution == "empirical":
+        samples = [
+            float(x) * multiplier
+            for x in (service_time.samples_minutes or [])
+            if np.isfinite(x) and float(x) > 0
+        ]
+        if samples:
+            return max(0.01, float(rng.choice(np.asarray(samples, dtype=float))))
+        return mean
+
+    if distribution == "triangular":
+        lo = service_time.min_minutes
+        mode = service_time.mode_minutes
+        hi = service_time.max_minutes
+        if lo is not None and mode is not None and hi is not None:
+            lo = max(0.01, float(lo) * multiplier)
+            mode = max(lo, float(mode) * multiplier)
+            hi = max(mode, float(hi) * multiplier)
+            if hi > lo:
+                return max(0.01, float(rng.triangular(lo, mode, hi)))
+        return mean
 
     if distribution == "constant" or std == 0:
         return mean
@@ -19,7 +48,6 @@ def _rng_service_minutes(rng: np.random.Generator, distribution: str, mean: floa
     if distribution == "exponential":
         return max(0.01, float(rng.exponential(mean)))
 
-    # lognormal from arithmetic mean/std
     variance = std * std
     sigma2 = math.log(1.0 + variance / (mean * mean))
     sigma = math.sqrt(max(sigma2, 0.0))
@@ -192,9 +220,8 @@ def simulate(
 
             svc = _rng_service_minutes(
                 rng,
-                act.service_time.distribution,
-                act.service_time.mean_minutes * cfg["service_multiplier"],
-                act.service_time.std_minutes * cfg["service_multiplier"],
+                act.service_time,
+                cfg["service_multiplier"],
             )
             end = start + svc
 

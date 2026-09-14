@@ -3,7 +3,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 VariableKind = Literal['fixed', 'continuous', 'quantized', 'discrete']
-DistributionKind = Literal['constant', 'normal', 'lognormal', 'exponential']
+DistributionKind = Literal['constant', 'normal', 'lognormal', 'exponential', 'empirical', 'triangular']
 
 
 class DesignVariable(BaseModel):
@@ -33,6 +33,16 @@ class ServiceTime(BaseModel):
     distribution: DistributionKind = 'lognormal'
     mean_minutes: float = 30.0
     std_minutes: float = 10.0
+
+    # Optional calibration metadata. These fields let a calibrated model retain
+    # the observed service-time sample rather than collapsing it to mean/std.
+    samples_minutes: list[float] | None = None
+    min_minutes: float | None = None
+    mode_minutes: float | None = None
+    max_minutes: float | None = None
+    sample_count: int | None = None
+    confidence: Literal['high', 'moderate', 'low', 'insufficient'] | None = None
+    fallback_reason: str | None = None
 
 
 class Activity(BaseModel):
