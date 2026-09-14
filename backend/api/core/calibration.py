@@ -83,98 +83,6 @@ def _is_system_resource(label: str) -> bool:
     return n in {"system", "automation", "automated", "robot", "bot", "rpa", "machine"}
 
 
-def _build_service_time(
-    samples: list[float],
-    global_service: float,
-) -> ServiceTime:
-    """Create a simulation distribution from observed activity durations.
-
-    Policy:
-      * n >= 30: empirical bootstrap, high confidence
-      * 10 <= n < 30: empirical bootstrap, moderate confidence
-      * 3 <= n < 10: triangular fallback, low confidence
-      * n < 3: triangular fallback around sparse observations/global median,
-        explicitly marked insufficient
-    """
-    vals = np.asarray(
-        [float(x) for x in samples if np.isfinite(x) and float(x) > 0],
-        dtype=float,
-    )
-    n = int(len(vals))
-
-    if n:
-        mean = float(np.mean(vals))
-        median = float(np.median(vals))
-        std = float(np.std(vals, ddof=1)) if n > 1 else 0.0
-    else:
-        mean = median = max(float(global_service), 0.01)
-        std = 0.0
-
-    if n >= 30:
-        return ServiceTime(
-            distribution="empirical",
-            mean_minutes=max(mean, 0.01),
-            std_minutes=max(std, 0.0),
-            samples_minutes=[float(x) for x in vals.tolist()],
-            sample_count=n,
-            confidence="high",
-        )
-
-    if n >= 10:
-        return ServiceTime(
-            distribution="empirical",
-            mean_minutes=max(mean, 0.01),
-            std_minutes=max(std, 0.0),
-            samples_minutes=[float(x) for x in vals.tolist()],
-            sample_count=n,
-            confidence="moderate",
-            fallback_reason="Empirical bootstrap retained with a moderate sample-size warning.",
-        )
-
-    if n >= 3:
-        lo = max(float(np.min(vals)), 0.01)
-        mode = max(median, 0.01)
-        hi = max(float(np.max(vals)), lo + 0.01)
-        if hi - lo < max(0.10 * mode, 0.10):
-            spread = max(0.20 * mode, 0.10)
-            lo = max(0.01, mode - spread)
-            hi = mode + spread
-        return ServiceTime(
-            distribution="triangular",
-            mean_minutes=max(mean, 0.01),
-            std_minutes=max(std, 0.0),
-            min_minutes=lo,
-            mode_minutes=min(max(mode, lo), hi),
-            max_minutes=hi,
-            sample_count=n,
-            confidence="low",
-            fallback_reason="Fewer than 10 valid observations; triangular fallback used.",
-        )
-
-    center = max(median if n else float(global_service), 0.01)
-    if n == 2:
-        observed_lo = max(float(np.min(vals)), 0.01)
-        observed_hi = max(float(np.max(vals)), observed_lo + 0.01)
-        pad = max(0.25 * center, 0.10)
-        lo = max(0.01, min(observed_lo, center - pad))
-        hi = max(observed_hi, center + pad)
-    else:
-        lo = max(0.01, 0.50 * center)
-        hi = max(lo + 0.01, 1.50 * center)
-
-    return ServiceTime(
-        distribution="triangular",
-        mean_minutes=center,
-        std_minutes=0.0,
-        min_minutes=lo,
-        mode_minutes=center,
-        max_minutes=hi,
-        sample_count=n,
-        confidence="insufficient",
-        fallback_reason="Fewer than 3 valid observations; broad triangular fallback requires review.",
-    )
-
-
 def _activity_resource_assignment(work: pd.DataFrame, activity_ids: dict[str, str]):
     assignment: dict[str, str | None] = {}
     pool_performers: dict[str, set[str]] = defaultdict(set)
@@ -270,12 +178,17 @@ def calibrate_event_log(
         work.groupby("activity")
         .agg(
             events=("case_id", "size"),
+            service_observations=("service_minutes", "count"),
             mean_service_minutes=("service_minutes", "mean"),
             median_service_minutes=("service_minutes", "median"),
             std_service_minutes=("service_minutes", "std"),
         )
         .reset_index()
     )
+    # Preserve the distinction between an observed service time and a missing
+    # service time.  A zero-observation activity is deliberately left unresolved
+    # for the process owner to classify instead of silently receiving a global
+    # fallback distribution.
     stats["mean_service_minutes"] = stats["mean_service_minutes"].fillna(global_service).clip(lower=0.01)
     stats["median_service_minutes"] = stats["median_service_minutes"].fillna(stats["mean_service_minutes"])
     stats["std_service_minutes"] = stats["std_service_minutes"].fillna(0.0).clip(lower=0.0)
@@ -324,65 +237,36 @@ def calibrate_event_log(
 
     resource_capacity = {r.id: r.capacity for r in resources}
 
-    # Activities that never transition to another observed activity are terminal
-    # milestones. They often have only a single timestamp (for example, Complete)
-    # and therefore should not be treated as under-sampled service operations.
-    observed_successor_sources: set[str] = set()
-    for _, g in work.groupby("case_id", sort=False):
-        acts = g["activity"].astype(str).tolist()
-        observed_successor_sources.update(a for a, _ in zip(acts[:-1], acts[1:]))
-    terminal_activity_names = set(work["activity"].astype(str).unique()) - observed_successor_sources
-
     activities: list[Activity] = []
-    service_time_summary: list[dict] = []
     for _, row in stats.iterrows():
         name = str(row["activity"])
         pool = assignment.get(name)
-
-        observed = (
-            work.loc[work["activity"] == name, "service_minutes"]
-            .dropna()
-            .astype(float)
-            .tolist()
-        )
-        has_no_timing_data = len(observed) == 0
-        suggested_terminal = name in terminal_activity_names
-        # No usable duration is deliberately left unresolved. A last observed
-        # activity is a plausible terminal/milestone, but it may also be a real
-        # service step whose start/end timestamps were not collected. The model
-        # receives a provisional triangular distribution so it remains valid,
-        # while the UI blocks simulation until the user chooses the treatment.
-        service_time = _build_service_time(observed, global_service)
-        if has_no_timing_data:
-            service_time.fallback_reason = (
-                "No valid service-time observations were captured. Confirm this "
-                "activity as a terminal/milestone, enter a triangular distribution, "
-                "or copy the distribution from a similar activity."
-            )
+        n_obs = int(row.get("service_observations", 0) or 0)
+        if n_obs <= 0:
+            distribution = "unresolved"
+            model_source = "unresolved"
+            confidence = "insufficient"
+        else:
+            distribution = "lognormal" if float(row["std_service_minutes"]) > 0 else "constant"
+            model_source = "event_log"
+            confidence = "high" if n_obs >= 30 else ("moderate" if n_obs >= 5 else "low")
 
         activities.append(
             Activity(
                 id=id_map[name],
                 name=name,
                 resource_pool=pool,
-                service_time=service_time,
+                service_time=ServiceTime(
+                    distribution=distribution,
+                    mean_minutes=float(row["mean_service_minutes"]),
+                    std_minutes=float(row["std_service_minutes"]),
+                ),
                 cost_per_hour=float(default_resource_cost_per_hour) if pool else 0.0,
+                model_source=model_source,
+                confidence=confidence,
+                terminal=False,
             )
         )
-
-        service_time_summary.append({
-            "activity": name,
-            "events": int(row["events"]),
-            "valid_service_observations": int(service_time.sample_count or 0),
-            "mean_service_minutes": float(row["mean_service_minutes"]),
-            "median_service_minutes": float(row["median_service_minutes"]),
-            "std_service_minutes": float(row["std_service_minutes"]),
-            "distribution": "unresolved" if has_no_timing_data else service_time.distribution,
-            "confidence": "insufficient" if has_no_timing_data else service_time.confidence,
-            "timing_role": "unresolved" if has_no_timing_data else "service",
-            "suggested_terminal": bool(suggested_terminal) if has_no_timing_data else False,
-            "fallback_reason": service_time.fallback_reason,
-        })
 
     activities.append(
         Activity(
@@ -391,6 +275,9 @@ def calibrate_event_log(
             resource_pool=None,
             service_time=ServiceTime(distribution="constant", mean_minutes=0.01, std_minutes=0.0),
             cost_per_hour=0.0,
+            model_source="terminal",
+            confidence="defined",
+            terminal=True,
         )
     )
 
@@ -540,7 +427,6 @@ def calibrate_event_log(
             "cases": int(count),
             "share": float(count / max(case_count, 1)),
             "mean_cycle_minutes": float(np.mean(cvals)) if cvals else 0.0,
-            "median_cycle_minutes": float(np.median(cvals)) if cvals else 0.0,
             "p95_cycle_minutes": float(np.percentile(cvals, 95)) if cvals else 0.0,
             "has_rework": bool(repeated),
         })
@@ -556,6 +442,31 @@ def calibrate_event_log(
             "observed_performers": int(len(pool_performers.get(r.id, set()))),
         })
 
+    activity_models = []
+    for _, row in stats.iterrows():
+        name = str(row["activity"])
+        n_obs = int(row.get("service_observations", 0) or 0)
+        act = next(a for a in activities if a.id == id_map[name])
+        activity_models.append({
+            "activity": name,
+            "activity_id": act.id,
+            "events": int(row["events"]),
+            "service_observations": n_obs,
+            "model_source": act.model_source,
+            "distribution": act.service_time.distribution,
+            "confidence": act.confidence,
+        })
+
+    activity_models.append({
+        "activity": "Process End",
+        "activity_id": process_end_id,
+        "events": 0,
+        "service_observations": 0,
+        "model_source": "terminal",
+        "distribution": "constant",
+        "confidence": "defined",
+    })
+
     return {
         "model": calibrated.model_dump(),
         "summary": {
@@ -569,7 +480,6 @@ def calibrate_event_log(
             "rework_case_rate": float(rework_cases / max(case_count, 1)),
             "most_common_variant_share": float(top_variant_count / max(case_count, 1)),
             "mean_cycle_minutes_observed": float(cycles.mean()) if len(cycles) else 0.0,
-            "median_cycle_minutes_observed": float(np.median(cycles)) if len(cycles) else 0.0,
             "p95_cycle_minutes_observed": float(np.percentile(cycles, 95)) if len(cycles) else 0.0,
             "sla_attainment_observed": float(np.mean(cycles <= sla_minutes)) if len(cycles) else 0.0,
             "start_activity": start_activity_name,
@@ -577,15 +487,11 @@ def calibrate_event_log(
             "estimated_resource_capacities": resource_capacity,
             "resources": resource_summary,
             "top_variants": top_variants,
-            "service_times": service_time_summary,
-            "service_time_unresolved_count": int(sum(
-                1 for item in service_time_summary
-                if item.get("timing_role") == "unresolved"
-            )),
-            "service_time_low_confidence_count": int(sum(
-                1 for item in service_time_summary
-                if item.get("confidence") in {"low", "insufficient"}
-            )),
+            "activity_models": activity_models,
+            "unresolved_activity_count": int(sum(1 for x in activity_models if x["model_source"] == "unresolved")),
+            "service_times": stats[[
+                "activity", "events", "service_observations", "mean_service_minutes", "median_service_minutes", "std_service_minutes"
+            ]].replace({np.nan: None}).to_dict(orient="records"),
             "routing": [
                 {
                     "source": source,

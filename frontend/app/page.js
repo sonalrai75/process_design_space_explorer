@@ -6,59 +6,34 @@ const API =
   process.env.NEXT_PUBLIC_API_BASE || "";
 
 const card = {
-  background:"#ffffff",
-  border:"1px solid #e2e8f0",
-  borderRadius:18,
-  padding:20,
-  boxShadow:"0 8px 28px rgba(15,23,42,.055)"
+  background:"#fff",
+  border:"1px solid #e5e7eb",
+  borderRadius:14,
+  padding:18,
+  boxShadow:"0 1px 2px rgba(0,0,0,.03)"
 };
 
 const buttonStyle = {
-  minHeight:40,
-  padding:"9px 14px",
-  borderRadius:10,
-  border:"1px solid #cbd5e1",
-  background:"#ffffff",
-  color:"#0f172a",
-  fontWeight:650,
-  cursor:"pointer",
-  boxShadow:"0 1px 2px rgba(15,23,42,.04)"
-};
-
-const primaryButtonStyle = {
-  ...buttonStyle,
-  border:"1px solid #0f172a",
-  background:"#0f172a",
-  color:"#ffffff",
-  boxShadow:"0 6px 16px rgba(15,23,42,.16)"
-};
-
-const accentButtonStyle = {
-  ...buttonStyle,
-  border:"1px solid #4f46e5",
-  background:"#4f46e5",
-  color:"#ffffff",
-  boxShadow:"0 6px 16px rgba(79,70,229,.18)"
+  padding:"9px 13px",
+  borderRadius:8,
+  border:"1px solid #d1d5db",
+  background:"#fff",
+  cursor:"pointer"
 };
 
 function Metric({label,value}) {
   return (
-    <div style={{...card,padding:16,boxShadow:"0 4px 16px rgba(15,23,42,.04)"}}>
+    <div style={card}>
       <div style={{
-        fontSize:11,
-        fontWeight:750,
-        letterSpacing:".045em",
-        textTransform:"uppercase",
-        color:"#64748b"
+        fontSize:12,
+        color:"#6b7280"
       }}>
         {label}
       </div>
 
       <div style={{
         fontSize:26,
-        fontWeight:760,
-        letterSpacing:"-.02em",
-        color:"#0f172a",
+        fontWeight:700,
         marginTop:6
       }}>
         {value}
@@ -81,9 +56,15 @@ function fmtFlow(v) {
   );
 }
 
-function fmtMin(v) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n.toFixed(1) : "—";
+function fmtPctPoints(delta) {
+  const pp =
+    100 * Number(delta);
+
+  return (
+    (pp >= 0 ? "+" : "")
+    + pp.toFixed(1)
+    + " pp"
+  );
 }
 
 function money(v) {
@@ -144,7 +125,85 @@ function activeTransitions(model) {
     : [];
 }
 
-function ProcessGraph({model}) {
+function applyDesignToModel(model, architectureId, design) {
+  if (!model) return null;
+
+  const next = JSON.parse(JSON.stringify(model));
+  const d = design || {};
+
+  const archVar = (next.variables || []).find(v => v.name === "architecture");
+  if (archVar && architectureId) {
+    archVar.value = architectureId;
+  }
+
+  const resourceKey = Object.keys(next).find(
+    k => Array.isArray(next[k])
+      && next[k].length
+      && typeof next[k][0] === "object"
+      && next[k][0] !== null
+      && Object.prototype.hasOwnProperty.call(next[k][0], "capacity")
+      && k !== "variables"
+  );
+
+  if (resourceKey) {
+    next[resourceKey] = next[resourceKey].map(r => {
+      const key = `resource_capacity__${r.id}`;
+      return Object.prototype.hasOwnProperty.call(d, key)
+        ? {...r, capacity:Number(d[key])}
+        : r;
+    });
+  }
+
+  next.architectures = (next.architectures || []).map(a => {
+    if (architectureId && a.id !== architectureId) return a;
+    return {
+      ...a,
+      transitions:(a.transitions || []).map(t => {
+        const key = `routing_probability__${t.source}__${t.target}`;
+        return Object.prototype.hasOwnProperty.call(d, key)
+          ? {...t, probability:Number(d[key])}
+          : t;
+      })
+    };
+  });
+
+  return next;
+}
+
+function designChangeLines(model, design) {
+  if (!model || !design) return [];
+  const lines = [];
+
+  Object.entries(design).forEach(([name,value]) => {
+    if (name.startsWith("resource_capacity__")) {
+      const id = name.replace("resource_capacity__", "");
+      const resource = (model.resources || []).find(r => r.id === id);
+      const before = resource?.capacity;
+      if (before !== undefined && Number(before) !== Number(value)) {
+        lines.push(`${resource?.name || id}: ${Number(before).toFixed(0)} → ${Number(value).toFixed(0)}`);
+      }
+    } else if (name.startsWith("routing_probability__")) {
+      const rest = name.replace("routing_probability__", "");
+      const parts = rest.split("__");
+      const source = parts[0];
+      const target = parts.slice(1).join("__");
+      const t = activeTransitions(model).find(x => x.source === source && x.target === target);
+      const before = t?.probability;
+      if (before !== undefined && Math.abs(Number(before)-Number(value)) > 1e-9) {
+        lines.push(`${source} → ${target}: ${fmtPct(before)} → ${fmtPct(value)}`);
+      }
+    } else if (name === "automation_level") {
+      const v = (model.variables || []).find(x => x.name === name);
+      if (v && Math.abs(Number(v.value)-Number(value)) > 1e-9) {
+        lines.push(`Automation: ${fmtPct(v.value)} → ${fmtPct(value)}`);
+      }
+    }
+  });
+
+  return lines;
+}
+
+function ProcessGraph({model,onSelectActivity,onSelectTransition,selectedActivityId,selectedTransitionIndex}) {
   const activities =
     Array.isArray(model?.activities)
     ? model.activities
@@ -450,9 +509,11 @@ function ProcessGraph({model}) {
                 ) / 2;
 
             return (
-              <g key={
-                `${t.source}-${t.target}-${i}`
-              }>
+              <g
+                key={`${t.source}-${t.target}-${i}`}
+                onClick={() => onSelectTransition?.(i)}
+                style={{cursor:onSelectTransition ? "pointer" : "default"}}
+              >
                 <path
                   d={edgePath(
                     t.source,
@@ -461,11 +522,13 @@ function ProcessGraph({model}) {
                   )}
                   fill="none"
                   stroke={
-                    backward
-                    ? "#b45309"
-                    : "#64748b"
+                    selectedTransitionIndex === i
+                    ? "#2563eb"
+                    : backward
+                      ? "#b45309"
+                      : "#64748b"
                   }
-                  strokeWidth="2"
+                  strokeWidth={selectedTransitionIndex === i ? "4" : "2"}
                   strokeDasharray={
                     backward
                     ? "6 4"
@@ -528,9 +591,9 @@ function ProcessGraph({model}) {
           return (
             <g
               key={a.id}
-              transform={
-                `translate(${p.x},${p.y})`
-              }
+              transform={`translate(${p.x},${p.y})`}
+              onClick={() => onSelectActivity?.(a.id)}
+              style={{cursor:onSelectActivity ? "pointer" : "default"}}
             >
               <rect
                 width={nodeW}
@@ -551,9 +614,11 @@ function ProcessGraph({model}) {
                     : "#cbd5e1"
                 }
                 strokeWidth={
-                  isStart || isEnd
-                  ? "2"
-                  : "1.5"
+                  selectedActivityId === a.id
+                  ? "4"
+                  : isStart || isEnd
+                    ? "2"
+                    : "1.5"
                 }
               />
 
@@ -629,6 +694,67 @@ function ProcessGraph({model}) {
         Solid arrows show forward routing. Dashed amber arrows
         indicate same-level/backward routing such as rework loops.
         Edge labels are routing probabilities.
+      </div>
+    </div>
+  );
+}
+
+function DesignSpaceChart({results,target=0.90}) {
+  const points = [];
+
+  (results || []).forEach(r => {
+    const frontier = r?.robust_frontier?.frontier || [];
+    frontier.forEach(p => points.push({
+      architecture:r.architecture,
+      cost:Number(p.cost),
+      robustness:Number(p.robustness_probability),
+      targetMet:Boolean(p.target_met)
+    }));
+  });
+
+  if (!points.length) return null;
+
+  const width = 760;
+  const height = 300;
+  const pad = {left:72,right:25,top:25,bottom:48};
+  const costs = points.map(p => p.cost);
+  const cmin = Math.min(...costs);
+  const cmax = Math.max(...costs);
+  const span = Math.max(cmax-cmin, 1);
+  const x = c => pad.left + (c-cmin)/span*(width-pad.left-pad.right);
+  const y = r => pad.top + (1-r)*(height-pad.top-pad.bottom);
+
+  return (
+    <div style={{...card,marginTop:16,background:"#fafafa"}}>
+      <div style={{fontWeight:800}}>Design-space frontier</div>
+      <div style={{fontSize:12,color:"#6b7280",marginTop:3}}>
+        Each point is a cost/robustness candidate from the replicated frontier.
+        The dashed line marks the robustness target.
+      </div>
+      <div style={{overflowX:"auto",marginTop:8}}>
+        <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
+          <line x1={pad.left} y1={pad.top} x2={pad.left} y2={height-pad.bottom} stroke="#94a3b8" />
+          <line x1={pad.left} y1={height-pad.bottom} x2={width-pad.right} y2={height-pad.bottom} stroke="#94a3b8" />
+          <line x1={pad.left} y1={y(target)} x2={width-pad.right} y2={y(target)} stroke="#b45309" strokeDasharray="6 5" />
+          <text x={width-pad.right} y={y(target)-5} textAnchor="end" fontSize="11" fill="#92400e">{fmtPct(target)} target</text>
+          {[0.5,0.75,0.9,1.0].map(v => (
+            <g key={v}>
+              <line x1={pad.left-5} y1={y(v)} x2={pad.left} y2={y(v)} stroke="#94a3b8"/>
+              <text x={pad.left-9} y={y(v)+4} textAnchor="end" fontSize="10" fill="#64748b">{fmtPct(v)}</text>
+            </g>
+          ))}
+          {points.map((p,i) => (
+            <g key={`${p.architecture}-${i}`}>
+              <circle cx={x(p.cost)} cy={y(p.robustness)} r={p.targetMet ? 6 : 4.5} fill={p.targetMet ? "#16a34a" : "#64748b"}>
+                <title>{`${p.architecture}: ${money(p.cost)}, ${fmtPct(p.robustness)}`}</title>
+              </circle>
+            </g>
+          ))}
+          <text x={(pad.left+width-pad.right)/2} y={height-10} textAnchor="middle" fontSize="11" fill="#475569">Annual cost</text>
+          <text transform={`translate(16 ${(pad.top+height-pad.bottom)/2}) rotate(-90)`} textAnchor="middle" fontSize="11" fill="#475569">Replicated feasibility</text>
+          <text x={pad.left} y={height-pad.bottom+18} fontSize="10" fill="#64748b">{money(cmin)}</text>
+          <text x={width-pad.right} y={height-pad.bottom+18} textAnchor="end" fontSize="10" fill="#64748b">{money(cmax)}</text>
+        </svg>
       </div>
     </div>
   );
@@ -757,16 +883,6 @@ export default function Home() {
   ] = useState("Ready");
 
   const [
-    workflowClass,
-    setWorkflowClass
-  ] = useState("general");
-
-  const [
-    contactCenterPreview,
-    setContactCenterPreview
-  ] = useState(null);
-
-  const [
     runningAction,
     setRunningAction
   ] = useState(null);
@@ -822,46 +938,8 @@ export default function Home() {
     setCalibration
   ] = useState(null);
 
-  const [
-    designVariableEnabled,
-    setDesignVariableEnabled
-  ] = useState({});
-
-  const [
-    manualCommitted,
-    setManualCommitted
-  ] = useState(null);
-
-  const [
-    timingDrafts,
-    setTimingDrafts
-  ] = useState({});
-
-  const unresolvedTiming =
-    Array.isArray(calibration?.service_times)
-      ? calibration.service_times.filter(
-          item => item?.timing_role === "unresolved"
-        )
-      : [];
-
-  const timingReady =
-    unresolvedTiming.length === 0;
-
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(
-        "pds_committed_manual_design"
-      );
-      if (!raw) return;
-      const committed = JSON.parse(raw);
-      if (committed?.model && committed?.design) {
-        setManualCommitted(committed);
-        setModel(committed.model);
-      }
-    } catch (_) {
-      // Ignore stale/local malformed state.
-    }
-  }, []);
+  const [selectedActivityId,setSelectedActivityId] = useState(null);
+  const [selectedTransitionIndex,setSelectedTransitionIndex] = useState(null);
 
   useEffect(() => {
     if (!runningAction) {
@@ -943,83 +1021,8 @@ export default function Home() {
     }
   }
 
-  async function loadGeneralProcessSample() {
-    try {
-      setStatus("Loading General Process sample");
-
-      const response = await fetch(
-        "/samples/general_process_sample.csv"
-      );
-
-      if (!response.ok) {
-        throw new Error("Unable to load the General Process sample");
-      }
-
-      const blob = await response.blob();
-      const sampleFile = new File(
-        [blob],
-        "general_process_sample.csv",
-        { type:"text/csv" }
-      );
-
-      const form = new FormData();
-      form.append("file", sampleFile);
-      form.append("case_col", "CaseID");
-      form.append("activity_col", "Activity");
-      form.append("start_col", "StartTime");
-      form.append("end_col", "EndTime");
-      form.append("resource_col", "Resource");
-      form.append("sla_minutes", String(model?.sla_minutes || 360));
-
-      const data = await call(
-        "/api/event-log/calibrate",
-        { method:"POST", body:form },
-        "Loading General Process sample"
-      );
-
-      setModel(data.model);
-      setCalibration(data.summary);
-      setSim(null);
-      setOpt(null);
-      setCmp(null);
-      setManualCommitted(null);
-      setLogFile(null);
-      setLogPreview(null);
-      setStatus("General Process sample loaded");
-    } catch(e) {
-      setStatus(e.message);
-    }
-  }
-
-  async function loadModelJsonFile(event) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    try {
-      const parsed = JSON.parse(await file.text());
-      if (!parsed?.activities || !parsed?.resources || !parsed?.architectures) {
-        throw new Error("The selected JSON is not a valid process model.");
-      }
-      setModel(parsed);
-      setSim(null);
-      setOpt(null);
-      setCmp(null);
-      setCalibration(null);
-      setManualCommitted(null);
-      setStatus(`Loaded ${parsed.name || file.name}`);
-    } catch (e) {
-      setStatus(e.message || "Unable to load model JSON");
-    } finally {
-      event.target.value = "";
-    }
-  }
-
   async function runSimulation() {
     try {
-      if (!timingReady) {
-        setStatus(`Resolve timing assumptions for ${unresolvedTiming.length} activit${unresolvedTiming.length === 1 ? "y" : "ies"} before simulation.`);
-        return;
-      }
       let m = model;
 
       if (!m) {
@@ -1063,63 +1066,6 @@ export default function Home() {
     try {
       setOpt(null);
 
-      let optimizationModel = model;
-
-      if (model) {
-        const numericVars =
-          numericDesignVariables(model);
-
-        const selectedVars =
-          numericVars.filter(
-            v => designVariableEnabled[v.name] !== false
-          );
-
-        if (numericVars.length && !selectedVars.length) {
-          setStatus(
-            "Select at least one design variable before optimization"
-          );
-          return;
-        }
-
-        for (const v of selectedVars) {
-          const lo = Number(v.lower);
-          const hi = Number(v.upper);
-
-          if (
-            !Number.isFinite(lo)
-            || !Number.isFinite(hi)
-            || hi <= lo
-          ) {
-            setStatus(
-              `Invalid bounds for ${v.name}: Max must be greater than Min`
-            );
-            return;
-          }
-
-          if (
-            v.kind === "quantized"
-            && (
-              !Number.isFinite(Number(v.step))
-              || Number(v.step) <= 0
-            )
-          ) {
-            setStatus(
-              `Invalid step for ${v.name}: Step must be greater than zero`
-            );
-            return;
-          }
-        }
-
-        optimizationModel = {
-          ...model,
-          variables:(model.variables || []).filter(
-            v =>
-              !isNumericDesignVariable(v)
-              || designVariableEnabled[v.name] !== false
-          )
-        };
-      }
-
       setOpt(
         await call(
           "/api/optimize",
@@ -1130,7 +1076,7 @@ export default function Home() {
                 "application/json"
             },
             body:JSON.stringify({
-              model:optimizationModel || undefined,
+              model:model || undefined,
               robustness_target:0.90
             })
           },
@@ -1143,42 +1089,18 @@ export default function Home() {
     }
   }
 
-  function openManualSvd() {
-    if (!model) {
-      setStatus("Load or calibrate a model first");
-      return;
-    }
-
-    const numericVars =
-      numericDesignVariables(model);
-
-    const manualModel = {
-      ...model,
-      variables:(model.variables || []).filter(
-        v =>
-          !isNumericDesignVariable(v)
-          || designVariableEnabled[v.name] !== false
-      )
-    };
-
-    if (numericVars.length && !manualModel.variables.some(isNumericDesignVariable)) {
-      setStatus("Select at least one design variable for manual SVD exploration");
-      return;
-    }
-
-    localStorage.setItem(
-      "pds_manual_model",
-      JSON.stringify(manualModel)
-    );
-    localStorage.setItem(
-      "pds_design_variable_enabled",
-      JSON.stringify(designVariableEnabled)
-    );
-    window.location.href = "/manual-svd";
-  }
-
   async function runCompare() {
     try {
+      const selected =
+        opt?.results?.[0];
+
+      if (!model || !selected?.best) {
+        setStatus(
+          "Run simulation and optimization before comparing AS-IS vs TO-BE"
+        );
+        return;
+      }
+
       setCmp(
         await call(
           "/api/compare",
@@ -1187,23 +1109,18 @@ export default function Home() {
             headers:{
               "Content-Type":"application/json"
             },
-            body:JSON.stringify(
-              manualCommitted
-              ? {
-                  model:manualCommitted.model,
-                  baseline_architecture_id:
-                    manualCommitted.baseline_architecture_id
-                    || manualCommitted.architecture_id,
-                  future_architecture_id:
-                    manualCommitted.architecture_id,
-                  future_design:
-                    manualCommitted.design,
-                  replications:20,
-                  cases:1200,
-                  seed:2
-                }
-              : { model:model || undefined }
-            )
+            body:JSON.stringify({
+              model,
+              baseline_architecture_id:
+                model.architectures?.[0]?.id,
+              future_architecture_id:
+                selected.architecture,
+              future_design:
+                selected.best.design,
+              cases:1200,
+              seed:2,
+              replications:20
+            })
           },
           "Comparing AS-IS vs TO-BE"
         )
@@ -1243,73 +1160,6 @@ export default function Home() {
       .filter(Boolean);
   }
 
-  function isNumericDesignVariable(v) {
-    return (
-      v?.kind === "continuous"
-      || v?.kind === "quantized"
-    );
-  }
-
-  function numericDesignVariables(m) {
-    return Array.isArray(m?.variables)
-      ? m.variables.filter(
-          isNumericDesignVariable
-        )
-      : [];
-  }
-
-  function updateDesignVariable(
-    name,
-    field,
-    value
-  ) {
-    setModel(prev => {
-      if (!prev) return prev;
-
-      return {
-        ...prev,
-        variables:(prev.variables || []).map(v => {
-          if (v.name !== name) return v;
-
-          if (field === "kind") {
-            return {
-              ...v,
-              kind:value,
-              step:
-                value === "quantized"
-                ? Number(v.step || 1)
-                : v.step
-            };
-          }
-
-          return {
-            ...v,
-            [field]:Number(value)
-          };
-        })
-      };
-    });
-  }
-
-  function currentDesignValue(v) {
-    for (const key of [
-      "value",
-      "current",
-      "initial",
-      "default"
-    ]) {
-      if (
-        v?.[key] !== undefined
-        && v?.[key] !== null
-        && Number.isFinite(Number(v[key]))
-      ) {
-        return Number(v[key]);
-      }
-    }
-
-    return null;
-  }
-
   function updateActivity(
     id,
     field,
@@ -1326,16 +1176,171 @@ export default function Home() {
               return a;
             }
 
-            if (
-              field
-              === "mean_minutes"
-            ) {
+            const numericServiceFields = new Set([
+              "mean_minutes",
+              "std_minutes",
+              "minimum_minutes",
+              "mode_minutes",
+              "maximum_minutes",
+              "scale"
+            ]);
+
+            if (numericServiceFields.has(field)) {
+              const service = {
+                ...a.service_time,
+                [field]:Number(value)
+              };
+
+              if (["minimum_minutes","mode_minutes","maximum_minutes"].includes(field)) {
+                const lo = Number(service.minimum_minutes ?? 0);
+                const md = Number(service.mode_minutes ?? lo);
+                const hi = Number(service.maximum_minutes ?? md);
+                if (lo <= md && md <= hi) {
+                  service.mean_minutes = (lo + md + hi) / 3;
+                  service.std_minutes = Math.sqrt(
+                    Math.max(
+                      0,
+                      (lo*lo + md*md + hi*hi - lo*md - lo*hi - md*hi) / 18
+                    )
+                  );
+                }
+              }
+
+              if (field === "scale" && a.model_source === "borrowed") {
+                const src = (prev.activities || []).find(x => x.id === service.source_activity_id);
+                if (src) {
+                  service.mean_minutes = Number(src.service_time?.mean_minutes || 0) * Number(service.scale || 1);
+                  service.std_minutes = Number(src.service_time?.std_minutes || 0) * Number(service.scale || 1);
+                }
+              }
+
               return {
                 ...a,
+                service_time:service
+              };
+            }
+
+            if (field === "samples_text") {
+              const samples = String(value)
+                .split(/[\s,;]+/)
+                .map(Number)
+                .filter(x => Number.isFinite(x) && x > 0);
+              const mean = samples.length
+                ? samples.reduce((x,y) => x+y,0) / samples.length
+                : 0;
+              const variance = samples.length > 1
+                ? samples.reduce((sum,x) => sum + (x-mean)*(x-mean),0) / (samples.length-1)
+                : 0;
+              return {
+                ...a,
+                model_source:"manual_sample",
+                confidence:samples.length >= 30 ? "high" : (samples.length >= 5 ? "moderate" : (samples.length ? "low" : "insufficient")),
+                terminal:false,
                 service_time:{
                   ...a.service_time,
-                  mean_minutes:
-                    Number(value)
+                  distribution:"empirical",
+                  samples_minutes:samples,
+                  mean_minutes:Math.max(mean,0.01),
+                  std_minutes:Math.sqrt(Math.max(variance,0))
+                }
+              };
+            }
+
+            if (field === "model_source") {
+              const source = value;
+              const baseService = {...a.service_time};
+              if (source === "terminal") {
+                return {
+                  ...a,
+                  model_source:"terminal",
+                  confidence:"defined",
+                  terminal:true,
+                  resource_pool:null,
+                  cost_per_hour:0,
+                  service_time:{
+                    ...baseService,
+                    distribution:"constant",
+                    mean_minutes:0.01,
+                    std_minutes:0
+                  }
+                };
+              }
+              if (source === "expert_estimate") {
+                const currentMean = Number(baseService.mean_minutes || 5);
+                const lo = Number(baseService.minimum_minutes ?? Math.max(0.01,currentMean*0.5));
+                const md = Number(baseService.mode_minutes ?? currentMean);
+                const hi = Number(baseService.maximum_minutes ?? currentMean*1.75);
+                const triMean = (lo + md + hi) / 3;
+                const triStd = Math.sqrt(Math.max(0,(lo*lo + md*md + hi*hi - lo*md - lo*hi - md*hi) / 18));
+                return {
+                  ...a,
+                  model_source:source,
+                  confidence:"moderate",
+                  terminal:false,
+                  service_time:{
+                    ...baseService,
+                    distribution:"triangular",
+                    minimum_minutes:lo,
+                    mode_minutes:md,
+                    maximum_minutes:hi,
+                    mean_minutes:triMean,
+                    std_minutes:triStd
+                  }
+                };
+              }
+              if (source === "manual_sample") {
+                return {
+                  ...a,
+                  model_source:source,
+                  confidence:(baseService.samples_minutes || []).length >= 5 ? "moderate" : "insufficient",
+                  terminal:false,
+                  service_time:{...baseService,distribution:"empirical",samples_minutes:baseService.samples_minutes || []}
+                };
+              }
+              if (source === "borrowed") {
+                return {
+                  ...a,
+                  model_source:source,
+                  confidence:"moderate",
+                  terminal:false,
+                  service_time:{...baseService,distribution:"borrowed",scale:Number(baseService.scale || 1)}
+                };
+              }
+              if (source === "fixed") {
+                return {
+                  ...a,
+                  model_source:source,
+                  confidence:"defined",
+                  terminal:false,
+                  service_time:{...baseService,distribution:"constant",std_minutes:0}
+                };
+              }
+              if (source === "unresolved") {
+                return {
+                  ...a,
+                  model_source:source,
+                  confidence:"insufficient",
+                  terminal:false,
+                  service_time:{...baseService,distribution:"unresolved"}
+                };
+              }
+              return {...a,model_source:source,terminal:false};
+            }
+
+            if (field === "source_activity_id") {
+              const src = (prev.activities || []).find(x => x.id === value);
+              const scale = Number(a.service_time?.scale || 1);
+              return {
+                ...a,
+                model_source:"borrowed",
+                confidence:src?.confidence === "high" ? "high" : "moderate",
+                terminal:false,
+                service_time:{
+                  ...a.service_time,
+                  distribution:"borrowed",
+                  source_activity_id:value,
+                  mean_minutes:src ? Number(src.service_time?.mean_minutes || 0) * scale : Number(a.service_time?.mean_minutes || 0),
+                  std_minutes:src ? Number(src.service_time?.std_minutes || 0) * scale : Number(a.service_time?.std_minutes || 0)
                 }
               };
             }
@@ -1349,181 +1354,10 @@ export default function Home() {
     });
   }
 
-  function updateTimingDraft(activity, field, value) {
-    setTimingDrafts(prev => ({
-      ...prev,
-      [activity]:{
-        ...(prev[activity] || {}),
-        [field]:value
-      }
-    }));
-  }
-
-  function updateCalibrationTiming(activity, patch) {
-    setCalibration(prev => {
-      if (!prev || !Array.isArray(prev.service_times)) return prev;
-      const service_times = prev.service_times.map(item =>
-        item.activity === activity
-          ? { ...item, ...patch }
-          : item
-      );
-      return {
-        ...prev,
-        service_times,
-        service_time_unresolved_count:
-          service_times.filter(item => item?.timing_role === "unresolved").length,
-        service_time_low_confidence_count:
-          service_times.filter(item => ["low","insufficient"].includes(item?.confidence)).length
-      };
-    });
-  }
-
-  function resolveTimingAsMilestone(activityName) {
-    setModel(prev => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        activities:(prev.activities || []).map(a =>
-          a.name === activityName
-            ? {
-                ...a,
-                resource_pool:null,
-                cost_per_hour:0,
-                service_time:{
-                  distribution:"constant",
-                  mean_minutes:0.01,
-                  std_minutes:0,
-                  samples_minutes:null,
-                  min_minutes:null,
-                  mode_minutes:null,
-                  max_minutes:null,
-                  sample_count:0,
-                  confidence:null,
-                  fallback_reason:"User confirmed terminal/milestone activity; no service time modeled."
-                }
-              }
-            : a
-        )
-      };
-    });
-    updateCalibrationTiming(activityName, {
-      distribution:"instantaneous",
-      confidence:"not_applicable",
-      timing_role:"milestone",
-      resolution:"user_confirmed_terminal",
-      fallback_reason:"User confirmed terminal/milestone activity; no service time modeled."
-    });
-    setStatus(`${activityName} set as terminal / milestone`);
-  }
-
-  function resolveTimingTriangular(activityName) {
-    const summary = (calibration?.service_times || []).find(x => x.activity === activityName);
-    const center = Number(summary?.median_service_minutes || summary?.mean_service_minutes || 5);
-    const draft = timingDrafts[activityName] || {};
-    const lo = Number(draft.min ?? Math.max(0.01, center * 0.5));
-    const mode = Number(draft.mode ?? center);
-    const hi = Number(draft.max ?? Math.max(center * 1.5, lo + 0.01));
-
-    if (![lo,mode,hi].every(Number.isFinite) || lo < 0 || !(lo <= mode && mode <= hi) || hi <= lo) {
-      setStatus(`For ${activityName}, triangular values must satisfy min ≤ mode ≤ max, with max > min.`);
-      return;
-    }
-
-    const mean = (lo + mode + hi) / 3;
-    const variance = (lo*lo + mode*mode + hi*hi - lo*mode - lo*hi - mode*hi) / 18;
-    const stdev = Math.sqrt(Math.max(variance, 0));
-
-    setModel(prev => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        activities:(prev.activities || []).map(a =>
-          a.name === activityName
-            ? {
-                ...a,
-                service_time:{
-                  distribution:"triangular",
-                  mean_minutes:mean,
-                  std_minutes:stdev,
-                  samples_minutes:null,
-                  min_minutes:lo,
-                  mode_minutes:mode,
-                  max_minutes:hi,
-                  sample_count:0,
-                  confidence:"low",
-                  fallback_reason:"User-defined triangular distribution because no timing data was captured."
-                }
-              }
-            : a
-        )
-      };
-    });
-    updateCalibrationTiming(activityName, {
-      distribution:"triangular",
-      confidence:"low",
-      timing_role:"service",
-      resolution:"user_defined_triangular",
-      min_minutes:lo,
-      mode_minutes:mode,
-      max_minutes:hi,
-      mean_service_minutes:mean,
-      fallback_reason:"User-defined triangular distribution because no timing data was captured."
-    });
-    setStatus(`${activityName} timing set to triangular distribution`);
-  }
-
-  function resolveTimingFromSimilar(activityName) {
-    const sourceName = timingDrafts[activityName]?.source;
-    if (!sourceName) {
-      setStatus(`Choose a similar activity for ${activityName}.`);
-      return;
-    }
-    const sourceActivity = (model?.activities || []).find(a => a.name === sourceName);
-    const sourceSummary = (calibration?.service_times || []).find(x => x.activity === sourceName);
-    if (!sourceActivity?.service_time || sourceSummary?.timing_role === "unresolved") {
-      setStatus(`The selected source activity does not have a resolved service-time distribution.`);
-      return;
-    }
-    const copied = JSON.parse(JSON.stringify(sourceActivity.service_time));
-    copied.fallback_reason = `Distribution copied from similar activity: ${sourceName}.`;
-
-    setModel(prev => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        activities:(prev.activities || []).map(a =>
-          a.name === activityName
-            ? { ...a, service_time:copied }
-            : a
-        )
-      };
-    });
-    updateCalibrationTiming(activityName, {
-      distribution:sourceSummary?.distribution || copied.distribution,
-      confidence:sourceSummary?.confidence || copied.confidence || "low",
-      timing_role:"service",
-      resolution:"copied_from_similar_activity",
-      inherited_from:sourceName,
-      mean_service_minutes:copied.mean_minutes,
-      fallback_reason:`Distribution copied from similar activity: ${sourceName}.`
-    });
-    setStatus(`${activityName} now uses the distribution from ${sourceName}`);
-  }
-
-  function resolvedTimingSources(targetName) {
-    const unresolved = new Set(
-      (calibration?.service_times || [])
-        .filter(x => x?.timing_role === "unresolved")
-        .map(x => x.activity)
-    );
-    return (model?.activities || [])
-      .filter(a =>
-        a.name !== targetName
-        && a.name !== "Process End"
-        && !unresolved.has(a.name)
-        && a.service_time
-        && a.service_time.distribution !== "constant"
-      );
+  async function loadActivitySamplesFile(id,file) {
+    if (!file) return;
+    const text = await file.text();
+    updateActivity(id,"samples_text",text);
   }
 
   function updateTransition(
@@ -1589,19 +1423,55 @@ export default function Home() {
 
       if (!key) return prev;
 
-      return {
+      const numericValue =
+        Number(value);
+
+      const next = {
         ...prev,
         [key]:
           prev[key].map(r =>
             r.id === id
             ? {
                 ...r,
-                [field]:
-                  Number(value)
+                [field]:numericValue
               }
             : r
           )
       };
+
+      if (
+        field === "capacity"
+        && Array.isArray(prev.variables)
+      ) {
+        const variableName =
+          `resource_capacity__${id}`;
+
+        next.variables =
+          prev.variables.map(v =>
+            v.name === variableName
+            ? {
+                ...v,
+                value:numericValue,
+                lower:
+                  v.lower == null
+                  ? 1
+                  : Math.min(
+                      Number(v.lower),
+                      numericValue
+                    ),
+                upper:
+                  v.upper == null
+                  ? Math.max(2,numericValue*2)
+                  : Math.max(
+                      Number(v.upper),
+                      numericValue
+                    )
+              }
+            : v
+          );
+      }
+
+      return next;
     });
   }
 
@@ -1627,13 +1497,22 @@ export default function Home() {
       base.id = id;
       base.name =
         "New Activity";
+      base.model_source = "unresolved";
+      base.confidence = "insufficient";
+      base.terminal = false;
 
-      if (base.service_time) {
-        base.service_time = {
-          ...base.service_time,
-          mean_minutes:5
-        };
-      }
+      base.service_time = {
+        ...(base.service_time || {}),
+        distribution:"unresolved",
+        mean_minutes:5,
+        std_minutes:0,
+        minimum_minutes:null,
+        mode_minutes:null,
+        maximum_minutes:null,
+        samples_minutes:[],
+        source_activity_id:null,
+        scale:1
+      };
 
       const resources =
         resourceOptions(prev);
@@ -1867,105 +1746,6 @@ export default function Home() {
     );
   }
 
-  async function loadContactCenterSample() {
-    try {
-      setStatus("Loading Contact Center sample workbook");
-
-      const response = await fetch(
-        "/samples/contact_center_sample.xlsx"
-      );
-
-      if (!response.ok) {
-        throw new Error("Unable to load the sample workbook");
-      }
-
-      const blob = await response.blob();
-      const form = new FormData();
-      form.append(
-        "file",
-        new File(
-          [blob],
-          "contact_center_sample.xlsx",
-          {
-            type:
-              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-          }
-        )
-      );
-
-      const data = await call(
-        "/api/contact-center/import",
-        { method:"POST", body:form },
-        "Loading Contact Center sample"
-      );
-
-      setModel(data.model);
-      setCalibration(data.summary);
-      setSim(null);
-      setOpt(null);
-      setCmp(null);
-      setManualCommitted(null);
-      setContactCenterPreview(null);
-      setLogFile(null);
-      setStatus("Contact Center sample loaded");
-    } catch(e) {
-      setStatus(e.message);
-    }
-  }
-
-  async function previewContactCenterWorkbook() {
-    if (!logFile) {
-      setStatus("Choose a Contact Center Excel workbook first");
-      return;
-    }
-
-    try {
-      const form = new FormData();
-      form.append("file", logFile);
-
-      const data = await call(
-        "/api/contact-center/preview",
-        { method:"POST", body:form },
-        "Validating Contact Center workbook"
-      );
-
-      setContactCenterPreview(data);
-      setStatus("Contact Center workbook is valid");
-    } catch(e) {
-      setContactCenterPreview(null);
-      setStatus(e.message);
-    }
-  }
-
-  async function importContactCenterWorkbook() {
-    if (!logFile) {
-      setStatus("Choose a Contact Center Excel workbook first");
-      return;
-    }
-
-    try {
-      const form = new FormData();
-      form.append("file", logFile);
-
-      const data = await call(
-        "/api/contact-center/import",
-        { method:"POST", body:form },
-        "Building Contact Center model"
-      );
-
-      setModel(data.model);
-      setCalibration(data.summary);
-      setSim(null);
-      setOpt(null);
-      setCmp(null);
-      setManualCommitted(null);
-      setContactCenterPreview(null);
-      setStatus("Contact Center model loaded");
-    } catch(e) {
-      setStatus(e.message);
-    }
-  }
-
   async function previewEventLog() {
     if (!logFile) {
       setStatus(
@@ -2105,87 +1885,54 @@ export default function Home() {
 
   return (
     <main style={{
-      maxWidth:1240,
+      maxWidth:1180,
       margin:"0 auto",
-      padding:"24px 22px 72px",
-      color:"#0f172a"
+      padding:"34px 22px 60px"
     }}>
-      <header style={{
-        background:"rgba(255,255,255,.94)",
-        border:"1px solid #e2e8f0",
-        borderRadius:18,
-        boxShadow:"0 10px 34px rgba(15,23,42,.06)",
-        overflow:"hidden"
+      <div style={{
+        display:"flex",
+        justifyContent:
+          "space-between",
+        gap:20,
+        alignItems:"flex-start",
+        flexWrap:"wrap"
       }}>
-        <div style={{
-          display:"flex",
-          alignItems:"center",
-          justifyContent:"space-between",
-          gap:16,
-          padding:"14px 18px",
-          borderBottom:"1px solid #eef2f7",
-          flexWrap:"wrap"
-        }}>
-          <div style={{display:"flex",alignItems:"center",gap:11}}>
-            <div style={{
-              width:34,height:34,borderRadius:10,
-              display:"grid",placeItems:"center",
-              background:"linear-gradient(135deg,#0f172a,#4338ca)",
-              color:"#fff",fontWeight:800,fontSize:14
-            }}>PD</div>
-            <div>
-              <div style={{fontSize:14,fontWeight:800,color:"#0f172a"}}>Process Design Space</div>
-              <div style={{fontSize:11,color:"#64748b",marginTop:1}}>Digital twin & optimization workspace</div>
-            </div>
+        <div>
+          <div style={{
+            fontSize:13,
+            fontWeight:700,
+            color:"#4f46e5",
+            letterSpacing:".08em"
+          }}>
+            PROCESS DIGITAL TWIN
           </div>
-          <nav style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-            <a href="/" style={{padding:"7px 10px",borderRadius:8,background:"#f1f5f9",color:"#0f172a",fontSize:13,fontWeight:700,textDecoration:"none"}}>Workspace</a>
-            <a href="/manual-svd" style={{padding:"7px 10px",borderRadius:8,color:"#475569",fontSize:13,fontWeight:700,textDecoration:"none"}}>Manual SVD</a>
-            <a href="/about.html" target="_blank" rel="noopener noreferrer" style={{padding:"7px 10px",borderRadius:8,color:"#475569",fontSize:13,fontWeight:700,textDecoration:"none"}}>About</a>
-          </nav>
+
+          <h1 style={{
+            fontSize:38,
+            margin:"8px 0 8px"
+          }}>
+            Process Design Space Explorer
+          </h1>
+
+          <p style={{
+            maxWidth:900,
+            color:"#4b5563",
+            lineHeight:1.55
+          }}>
+            Statistical robust-manifold optimization
+            using common random numbers, demand-normalized
+            flow balance, confidence intervals, and explicit
+            robustness-target enforcement.
+          </p>
         </div>
 
         <div style={{
-          padding:"26px 24px 24px",
-          background:"linear-gradient(135deg,#ffffff 0%,#f8fafc 58%,#eef2ff 100%)"
+          fontSize:13,
+          color:"#6b7280"
         }}>
-          <div style={{
-            display:"flex",justifyContent:"space-between",gap:24,
-            alignItems:"flex-start",flexWrap:"wrap"
-          }}>
-            <div style={{maxWidth:820}}>
-              <div style={{
-                display:"inline-flex",alignItems:"center",gap:7,
-                padding:"5px 9px",borderRadius:999,
-                background:"#eef2ff",color:"#4338ca",
-                fontSize:11,fontWeight:800,letterSpacing:".055em",textTransform:"uppercase"
-              }}>Process intelligence</div>
-              <h1 style={{
-                fontSize:"clamp(30px,4vw,44px)",lineHeight:1.08,
-                letterSpacing:"-.035em",color:"#0f172a",margin:"12px 0 10px"
-              }}>Process Design Space Explorer</h1>
-              <p style={{
-                maxWidth:790,color:"#475569",lineHeight:1.65,
-                margin:0,fontSize:15
-              }}>
-                Build a process digital twin, quantify capacity and cycle-time behavior,
-                and move from AS-IS to robust TO-BE designs using automated or human-guided optimization.
-              </p>
-            </div>
-            <div style={{
-              display:"flex",alignItems:"center",gap:8,
-              padding:"8px 11px",borderRadius:999,
-              background:busy ? "#eef2ff" : "#ecfdf5",
-              color:busy ? "#4338ca" : "#047857",
-              border:`1px solid ${busy ? "#c7d2fe" : "#a7f3d0"}`,
-              fontSize:12,fontWeight:750,whiteSpace:"nowrap"
-            }}>
-              <span style={{width:7,height:7,borderRadius:"50%",background:busy ? "#6366f1" : "#10b981"}} />
-              {busy ? runningAction : status}
-            </div>
-          </div>
+          Status: {status}
         </div>
-      </header>
+      </div>
 
       {busy &&
         <div style={{
@@ -2239,171 +1986,147 @@ export default function Home() {
       }
 
       <style jsx global>{`
-        html { background:#f4f7fb; }
-        body { margin:0; background:linear-gradient(180deg,#f8fafc 0,#f4f7fb 460px,#f8fafc 100%); color:#0f172a; font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
-        button, input, select { font:inherit; }
-        button { transition:transform .12s ease, box-shadow .12s ease, border-color .12s ease, opacity .12s ease; }
-        button:not(:disabled):hover { transform:translateY(-1px); box-shadow:0 7px 18px rgba(15,23,42,.10); }
-        input, select { border:1px solid #cbd5e1; border-radius:9px; padding:8px 10px; background:#fff; color:#0f172a; outline:none; }
-        input:focus, select:focus { border-color:#6366f1; box-shadow:0 0 0 3px rgba(99,102,241,.12); }
-        table th { color:#475569; font-size:11px; letter-spacing:.04em; text-transform:uppercase; font-weight:800; }
-        table td, table th { padding-top:9px !important; padding-bottom:9px !important; }
-        a { transition:opacity .12s ease, background .12s ease; }
         @keyframes spin {
           from { transform: rotate(0deg); }
           to { transform: rotate(360deg); }
         }
       `}</style>
 
+      <div style={{
+        marginTop:10,
+        marginBottom:6
+      }}>
+        <a
+          href="/about.html"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            color:"#4f46e5",
+            fontWeight:700,
+            textDecoration:"none"
+          }}
+        >
+          About this app: features, algorithms, and technical overview →
+        </a>
+      </div>
 
       <section style={{
         ...card,
-        marginTop:20
+        marginTop:18
       }}>
-        <div style={{fontSize:11,fontWeight:800,letterSpacing:".06em",textTransform:"uppercase",color:"#6366f1",marginBottom:6}}>Step 1 · Model</div>
         <h2 style={{
-          margin:"0 0 6px",fontSize:21,letterSpacing:"-.015em"
+          marginTop:0
         }}>
-          Build and evaluate the baseline
+          Demo workflow
         </h2>
 
-        <p style={{
-          marginTop:0,
-          color:"#4b5563",
-          lineHeight:1.5
-        }}>
-          Choose the workflow class first. The data-import section immediately below
-          changes to the template and parser for that workflow class.
-        </p>
-
         <div style={{
-          display:"grid",
-          gridTemplateColumns:"minmax(220px,320px) 1fr",
-          gap:14,
-          alignItems:"end",
-          margin:"16px 0"
+          display:"flex",
+          gap:10,
+          flexWrap:"wrap"
         }}>
-          <label style={{fontSize:12,color:"#475569",fontWeight:700}}>
-            Workflow class
-            <select
-              value={workflowClass}
-              onChange={e => {
-                const next = e.target.value;
-                setWorkflowClass(next);
-                setLogFile(null);
-                setLogPreview(null);
-                setContactCenterPreview(null);
-                setCalibration(null);
-              }}
-              style={{display:"block",width:"100%",marginTop:6}}
-            >
-              <option value="general">General Process</option>
-              <option value="contact_center">Contact Center</option>
-            </select>
-          </label>
+          <button
+            disabled={busy}
+            style={{
+              ...buttonStyle,
+              opacity:
+                busy ? 0.55 : 1
+            }}
+            onClick={loadModel}
+          >
+            Load demo model
+          </button>
 
-          <div style={{fontSize:13,color:"#64748b",lineHeight:1.45}}>
-            {workflowClass === "contact_center"
-              ? "Contact Center uses a standard multi-sheet Excel workbook for events, agent skills, staffing, and interval arrivals."
-              : "General Process uses the existing event-log format for activities, timestamps, resources, routing, and service-time calibration."}
-          </div>
+          <button
+            disabled={busy}
+            style={{
+              ...buttonStyle,
+              opacity:
+                busy ? 0.55 : 1
+            }}
+            onClick={
+              runSimulation
+            }
+          >
+            Run baseline simulation
+          </button>
+
+          <button
+            disabled={busy}
+            style={{
+              ...buttonStyle,
+              opacity:
+                busy ? 0.55 : 1
+            }}
+            onClick={runOptimize}
+          >
+            {runningAction
+              === "Running robust optimization"
+              ? "Optimization running..."
+              : "Optimize architecture families"}
+          </button>
+
+          <button
+            disabled={busy || !model || !opt?.results?.[0]?.best}
+            style={{
+              ...buttonStyle,
+              opacity:
+                busy || !model || !opt?.results?.[0]?.best
+                ? 0.55
+                : 1
+            }}
+            onClick={runCompare}
+          >
+            Compare selected TO-BE
+          </button>
         </div>
-
       </section>
 
-      {workflowClass === "contact_center" &&
+      {model &&
         <section style={{
           ...card,
           marginTop:18
         }}>
-          <h2 style={{marginTop:0}}>Contact Center Excel import</h2>
-
-          <p style={{color:"#4b5563",lineHeight:1.5}}>
-            Use the standard Excel workbook. Operations teams populate the sheets;
-            the app validates the workbook and converts it to the internal process model.
-            JSON is not required for external data collection.
-          </p>
-
-          <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:14}}>
-            <button
-              disabled={busy}
-              style={{...primaryButtonStyle,opacity:busy ? 0.55 : 1}}
-              onClick={loadContactCenterSample}
-            >
-              Load sample Contact Center
-            </button>
-            <a href="/templates/contact_center_template.xlsx" download style={buttonStyle}>
-              Download blank Excel template
-            </a>
-            <a href="/samples/contact_center_sample.xlsx" download style={buttonStyle}>
-              Download sample Excel workbook
-            </a>
-          </div>
+          <h2 style={{
+            marginTop:0
+          }}>
+            {model.name}
+          </h2>
 
           <div style={{
-            padding:"12px 14px",
-            background:"#f8fafc",
-            border:"1px solid #e2e8f0",
-            borderRadius:10,
-            fontSize:12,
-            color:"#475569",
-            marginBottom:14
+            display:"flex",
+            gap:8,
+            flexWrap:"wrap"
           }}>
-            Required sheets: <b>Events</b>, <b>Agent_Skills</b>, <b>Staffing</b>, <b>Arrivals</b>.
-            Optional: <b>Settings</b>. The Events sheet uses one row per workflow event;
-            SERVICE_START and SERVICE_END share the same interaction_id and contact_leg_id.
+            {(model.activities || []).map(
+              a =>
+              <div
+                key={a.id}
+                style={{
+                  padding:"10px 14px",
+                  border:
+                    "1px solid #d1d5db",
+                  borderRadius:10
+                }}
+              >
+                <b>{a.name}</b>
+
+                <div style={{
+                  fontSize:12,
+                  color:"#6b7280"
+                }}>
+                  {
+                    a.service_time
+                    .mean_minutes
+                  } min
+                </div>
+              </div>
+            )}
           </div>
-
-          <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"center"}}>
-            <input
-              type="file"
-              accept=".xlsx,.xls"
-              disabled={busy}
-              onChange={e => {
-                setLogFile(e.target.files?.[0] || null);
-                setContactCenterPreview(null);
-                setCalibration(null);
-              }}
-            />
-
-            <button
-              disabled={busy || !logFile}
-              style={{...buttonStyle,opacity:busy || !logFile ? 0.55 : 1}}
-              onClick={previewContactCenterWorkbook}
-            >
-              Validate workbook
-            </button>
-
-            <button
-              disabled={busy || !logFile}
-              style={{...primaryButtonStyle,opacity:busy || !logFile ? 0.55 : 1}}
-              onClick={importContactCenterWorkbook}
-            >
-              Build Contact Center model
-            </button>
-          </div>
-
-          {contactCenterPreview &&
-            <div style={{marginTop:14,fontSize:13,color:"#166534",fontWeight:700}}>
-              Workbook valid · {Object.entries(contactCenterPreview.sheets || {}).map(
-                ([name,info]) => `${name}: ${info.rows} rows`
-              ).join(" · ")}
-            </div>
-          }
-
-          {calibration?.workflow_class === "contact_center" &&
-            <div style={{marginTop:14,fontSize:13,color:"#475569",lineHeight:1.6}}>
-              Imported {calibration.interactions} interaction(s), {calibration.service_legs} service leg(s),
-              {" "}{calibration.activities} workflow activity/queue(s), and {calibration.resource_pools} resource pool(s).
-              {calibration.warnings?.length
-                ? ` ${calibration.warnings.length} activity/queue(s) have sparse service-time data and were flagged.`
-                : " Service-time data is adequately populated for the observed queues."}
-            </div>
-          }
         </section>
       }
 
-      {workflowClass === "general" &&
+
       <section style={{
         ...card,
         marginTop:18
@@ -2423,22 +2146,6 @@ export default function Home() {
           service-time estimates, arrival rate, and observed
           resource counts, then creates an editable process model.
         </p>
-
-        <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:14}}>
-          <button
-            disabled={busy}
-            style={{...buttonStyle,opacity:busy ? 0.55 : 1}}
-            onClick={loadGeneralProcessSample}
-          >
-            Load sample General Process
-          </button>
-          <a href="/templates/general_process_template.csv" download style={buttonStyle}>
-            Download blank CSV template
-          </a>
-          <a href="/samples/general_process_sample.csv" download style={buttonStyle}>
-            Download sample CSV
-          </a>
-        </div>
 
         <div style={{
           display:"flex",
@@ -2590,405 +2297,145 @@ export default function Home() {
             marginTop:14
           }}>
             <b>
-              Calibration summary
+              Calibrated AS-IS digital twin
             </b>
 
             <div style={{
-              fontSize:13,
-              color:"#4b5563",
-              marginTop:6
+              display:"grid",
+              gridTemplateColumns:
+                "repeat(auto-fit,minmax(150px,1fr))",
+              gap:10,
+              marginTop:12
             }}>
-              Cases {
-                calibration.cases
-              } · Activities {
-                calibration.activities
-              } · Arrival rate {
-                Number(
-                  calibration
-                  .arrival_rate_per_hour
-                ).toFixed(2)
-              }/hr · Estimated analysts {
-                calibration
-                .estimated_analyst_capacity
-              } · Repeat events {
-                calibration
-                .repeat_event_count
-              }
+              <Metric
+                label="Cases"
+                value={calibration.cases}
+              />
+              <Metric
+                label="Activities"
+                value={calibration.activities}
+              />
+              <Metric
+                label="Resource pools"
+                value={calibration.resource_pools}
+              />
+              <Metric
+                label="Arrival rate / hr"
+                value={Number(
+                  calibration.arrival_rate_per_hour
+                ).toFixed(2)}
+              />
+              <Metric
+                label="Observed P95 cycle"
+                value={`${Number(
+                  calibration.p95_cycle_minutes_observed
+                ).toFixed(1)} min`}
+              />
+              <Metric
+                label="Observed SLA"
+                value={fmtPct(
+                  calibration.sla_attainment_observed
+                )}
+              />
+              <Metric
+                label="Cases with rework"
+                value={fmtPct(
+                  calibration.rework_case_rate
+                )}
+              />
+              <Metric
+                label="Top variant share"
+                value={fmtPct(
+                  calibration.most_common_variant_share
+                )}
+              />
+              <Metric
+                label="Structural bottleneck"
+                value={
+                  calibration.bottleneck_resource
+                  || "none"
+                }
+              />
+              <Metric
+                label="Max utilization"
+                value={fmtPct(
+                  calibration.max_resource_utilization
+                  || 0
+                )}
+              />
+              <Metric
+                label="Capacity state"
+                value={
+                  calibration.capacity_status
+                  || "n/a"
+                }
+              />
             </div>
 
             <div style={{
               fontSize:12,
               color:"#6b7280",
-              marginTop:5
+              marginTop:10
             }}>
-              Start activity: {
-                calibration
-                .start_activity
-              }. The calibrated model is now the active
-              model used by Simulation and Optimization.
+              Start activity: {calibration.start_activity}. The calibrated
+              model now contains generic resource pools and capacity design
+              variables and is used directly by Simulation and Optimization.
             </div>
 
-            {Array.isArray(calibration.service_times) && calibration.service_times.length > 0 &&
-              <div style={{marginTop:14}}>
-                <div style={{display:"flex",justifyContent:"space-between",gap:12,alignItems:"center",flexWrap:"wrap",marginBottom:8}}>
-                  <b style={{fontSize:13}}>Service-time calibration</b>
-                  <span style={{fontSize:12,color:unresolvedTiming.length > 0 ? "#b45309" : "#64748b",fontWeight:unresolvedTiming.length > 0 ? 700 : 400}}>
-                    {unresolvedTiming.length > 0
-                      ? `${unresolvedTiming.length} activit${unresolvedTiming.length === 1 ? "y requires" : "ies require"} a timing decision`
-                      : "All activity timing assumptions resolved"}
-                  </span>
-                </div>
+            {Number(calibration.unresolved_activity_count || 0) > 0 &&
+              <div style={{marginTop:12,padding:"10px 12px",background:"#fff7ed",border:"1px solid #fed7aa",borderRadius:8,fontSize:12,color:"#9a3412"}}>
+                <b>{calibration.unresolved_activity_count} activity{Number(calibration.unresolved_activity_count) === 1 ? "" : "ies"} have no usable duration observations.</b> Select each highlighted activity in the Visual Process Modeler and define it as terminal, triangular, manual-sample, borrowed, or fixed before simulation/optimization.
+              </div>
+            }
+
+            {Array.isArray(calibration.activity_models) && calibration.activity_models.length > 0 &&
+              <div style={{marginTop:18}}>
+                <div style={{fontWeight:800,marginBottom:8}}>Activity modeling provenance</div>
                 <div style={{overflowX:"auto"}}>
                   <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                    <thead>
-                      <tr>
-                        <th align="left" style={{padding:"7px 6px",borderBottom:"1px solid #e2e8f0"}}>Activity</th>
-                        <th align="right" style={{padding:"7px 6px",borderBottom:"1px solid #e2e8f0"}}>n</th>
-                        <th align="left" style={{padding:"7px 6px",borderBottom:"1px solid #e2e8f0"}}>Timing status</th>
-                        <th align="left" style={{padding:"7px 6px",borderBottom:"1px solid #e2e8f0"}}>Simulation distribution</th>
-                        <th align="left" style={{padding:"7px 6px",borderBottom:"1px solid #e2e8f0"}}>Confidence</th>
-                      </tr>
-                    </thead>
+                    <thead><tr><th align="left">Activity</th><th align="right">Duration observations</th><th align="left">Model source</th><th align="left">Simulation distribution</th><th align="left">Confidence</th></tr></thead>
                     <tbody>
-                      {calibration.service_times.map((s, i) =>
-                        <tr key={`${s.activity}-${i}`}>
-                          <td style={{padding:"7px 6px",borderBottom:"1px solid #f1f5f9"}}>{s.activity}</td>
-                          <td align="right" style={{padding:"7px 6px",borderBottom:"1px solid #f1f5f9"}}>{s.timing_role === "milestone" ? "—" : (s.valid_service_observations ?? 0)}</td>
-                          <td style={{padding:"7px 6px",borderBottom:"1px solid #f1f5f9",fontWeight:600,color:s.timing_role === "unresolved" ? "#b45309" : "#475569"}}>
-                            {s.timing_role === "unresolved"
-                              ? "Needs decision"
-                              : s.timing_role === "milestone"
-                              ? "Terminal / milestone"
-                              : s.resolution === "copied_from_similar_activity"
-                              ? `Copied from ${s.inherited_from}`
-                              : "Observed / resolved"}
-                          </td>
-                          <td style={{padding:"7px 6px",borderBottom:"1px solid #f1f5f9"}}>
-                            {s.distribution === "unresolved"
-                              ? "Not yet assigned"
-                              : s.distribution === "instantaneous"
-                              ? "Instantaneous milestone"
-                              : s.distribution === "empirical"
-                              ? "Empirical bootstrap"
-                              : s.distribution === "triangular"
-                              ? "Triangular"
-                              : s.distribution}
-                          </td>
-                          <td style={{padding:"7px 6px",borderBottom:"1px solid #f1f5f9",color:s.confidence === "insufficient" || s.confidence === "low" ? "#b45309" : "#475569",fontWeight:600}}>
-                            {s.confidence === "not_applicable" ? "N/A" : (s.confidence || "—")}
-                          </td>
+                      {calibration.activity_models.map(x =>
+                        <tr key={x.activity_id} style={{background:x.model_source === "unresolved" ? "#fff7ed" : "transparent"}}>
+                          <td style={{padding:"6px 4px"}}>{x.activity}</td>
+                          <td align="right">{x.model_source === "terminal" ? "—" : x.service_observations}</td>
+                          <td style={{paddingLeft:10}}>{x.model_source}</td>
+                          <td>{x.distribution}</td>
+                          <td style={{fontWeight:x.confidence === "insufficient" ? 800 : 500,color:x.confidence === "insufficient" ? "#9a3412" : "#475569"}}>{x.confidence}</td>
                         </tr>
                       )}
                     </tbody>
                   </table>
                 </div>
+              </div>
+            }
 
-                {unresolvedTiming.length > 0 &&
-                  <div style={{marginTop:14,display:"grid",gap:12}}>
-                    <div style={{fontSize:12,color:"#92400e",background:"#fffbeb",border:"1px solid #fde68a",borderRadius:10,padding:"10px 12px",lineHeight:1.5}}>
-                      No observed duration does not mean zero duration. Resolve each activity before simulation. You can confirm it as a terminal/milestone, define a triangular service-time distribution, or reuse the distribution from a similar resolved activity.
-                    </div>
-                    {unresolvedTiming.map(item => {
-                      const center = Number(item.median_service_minutes || item.mean_service_minutes || 5);
-                      const draft = timingDrafts[item.activity] || {};
-                      const sources = resolvedTimingSources(item.activity);
-                      return (
-                        <div key={`timing-${item.activity}`} style={{border:"1px solid #fed7aa",background:"#fffaf5",borderRadius:12,padding:14}}>
-                          <div style={{display:"flex",justifyContent:"space-between",gap:10,alignItems:"center",flexWrap:"wrap",marginBottom:10}}>
-                            <div>
-                              <b>{item.activity}</b>
-                              <div style={{fontSize:11,color:"#78716c",marginTop:2}}>
-                                No valid service-time observations.{item.suggested_terminal ? " This activity appears at the end of observed cases, but confirmation is required." : ""}
-                              </div>
-                            </div>
-                            <button style={buttonStyle} onClick={() => resolveTimingAsMilestone(item.activity)}>
-                              Terminal / milestone
-                            </button>
-                          </div>
-
-                          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))",gap:8,alignItems:"end"}}>
-                            <label style={{fontSize:11,color:"#475569"}}>Triangular min (min)
-                              <input type="number" min="0" step="0.1" value={draft.min ?? Number(Math.max(0.01, center * 0.5).toFixed(1))} onChange={e => updateTimingDraft(item.activity,"min",e.target.value)} style={{width:"100%",marginTop:4}} />
-                            </label>
-                            <label style={{fontSize:11,color:"#475569"}}>Most likely (min)
-                              <input type="number" min="0" step="0.1" value={draft.mode ?? Number(center.toFixed(1))} onChange={e => updateTimingDraft(item.activity,"mode",e.target.value)} style={{width:"100%",marginTop:4}} />
-                            </label>
-                            <label style={{fontSize:11,color:"#475569"}}>Triangular max (min)
-                              <input type="number" min="0" step="0.1" value={draft.max ?? Number(Math.max(center * 1.5, center + 0.1).toFixed(1))} onChange={e => updateTimingDraft(item.activity,"max",e.target.value)} style={{width:"100%",marginTop:4}} />
-                            </label>
-                            <button style={buttonStyle} onClick={() => resolveTimingTriangular(item.activity)}>
-                              Use triangular
-                            </button>
-                          </div>
-
-                          <div style={{display:"flex",gap:8,alignItems:"end",flexWrap:"wrap",marginTop:10,paddingTop:10,borderTop:"1px solid #ffedd5"}}>
-                            <label style={{fontSize:11,color:"#475569",minWidth:220,flex:"1 1 260px"}}>Use distribution from similar activity
-                              <select value={draft.source || ""} onChange={e => updateTimingDraft(item.activity,"source",e.target.value)} style={{width:"100%",marginTop:4}}>
-                                <option value="">Select activity...</option>
-                                {sources.map(a => <option key={a.id} value={a.name}>{a.name}</option>)}
-                              </select>
-                            </label>
-                            <button disabled={!sources.length} style={{...buttonStyle,opacity:sources.length ? 1 : 0.55}} onClick={() => resolveTimingFromSimilar(item.activity)}>
-                              Copy distribution
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                }
-
-                <div style={{fontSize:11,color:"#64748b",marginTop:8,lineHeight:1.45}}>
-                  Empirical bootstrap preserves the observed service-time shape. Sparse observed samples may use a triangular fallback. Activities with no valid timing data require an explicit modeling decision before simulation.
+            {Array.isArray(calibration.top_variants) && calibration.top_variants.length > 0 &&
+              <div style={{marginTop:18}}>
+                <div style={{fontWeight:800,marginBottom:8}}>Top process variants</div>
+                <div style={{overflowX:"auto"}}>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                    <thead><tr><th align="left">#</th><th align="left">Path</th><th align="right">Cases</th><th align="right">Share</th><th align="right">Mean cycle</th><th align="right">P95 cycle</th><th align="left">Rework</th></tr></thead>
+                    <tbody>
+                      {calibration.top_variants.slice(0,8).map(v =>
+                        <tr key={v.rank}>
+                          <td style={{padding:"6px 4px"}}>{v.rank}</td>
+                          <td style={{padding:"6px 4px",minWidth:280}}>{v.path}</td>
+                          <td align="right">{v.cases}</td>
+                          <td align="right">{fmtPct(v.share)}</td>
+                          <td align="right">{Number(v.mean_cycle_minutes).toFixed(1)} min</td>
+                          <td align="right">{Number(v.p95_cycle_minutes).toFixed(1)} min</td>
+                          <td style={{paddingLeft:8,fontWeight:v.has_rework ? 700 : 400,color:v.has_rework ? "#92400e" : "#475569"}}>{v.has_rework ? "Yes" : "No"}</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
                 </div>
               </div>
             }
           </div>
         }
       </section>
-
-      }
-
-      <section style={{
-        ...card,
-        marginTop:18
-      }}>
-        <div style={{fontSize:11,fontWeight:800,letterSpacing:".06em",textTransform:"uppercase",color:"#6366f1",marginBottom:6}}>Step 2 · Baseline</div>
-        <h2 style={{margin:"0 0 6px",fontSize:21,letterSpacing:"-.015em"}}>
-          Run the AS-IS simulation
-        </h2>
-        <p style={{marginTop:0,color:"#4b5563",lineHeight:1.5}}>
-          After loading or calibrating a valid model, run the baseline simulation before optimization.
-        </p>
-        {!timingReady &&
-          <div style={{margin:"0 0 12px",padding:"9px 11px",border:"1px solid #fde68a",borderRadius:9,background:"#fffbeb",color:"#92400e",fontSize:12}}>
-            Resolve timing assumptions for {unresolvedTiming.length} activit{unresolvedTiming.length === 1 ? "y" : "ies"} in Service-time calibration before running simulation.
-          </div>
-        }
-        <button
-          disabled={busy || !model || !timingReady}
-          style={{...primaryButtonStyle,opacity:busy || !model || !timingReady ? 0.55 : 1}}
-          onClick={runSimulation}
-        >
-          Run baseline simulation
-        </button>
-      </section>
-
-      <section style={{
-        ...card,
-        marginTop:18
-      }}>
-        <div style={{fontSize:11,fontWeight:800,letterSpacing:".06em",textTransform:"uppercase",color:"#6366f1",marginBottom:6}}>Step 3 · Optimize</div>
-        <h2 style={{
-          margin:"0 0 6px",fontSize:21,letterSpacing:"-.015em"
-        }}>
-          Choose optimization approach
-        </h2>
-
-        <p style={{
-          marginTop:0,
-          marginBottom:16,
-          color:"#4b5563",
-          lineHeight:1.5
-        }}>
-          Automated and manual optimization are alternative paths to a TO-BE design.
-          You can use either approach after defining the design variables.
-        </p>
-
-        <div style={{
-          display:"grid",
-          gridTemplateColumns:
-            "repeat(auto-fit,minmax(280px,1fr))",
-          gap:14
-        }}>
-          <div style={{
-            border:"1px solid #dbeafe",
-            borderRadius:16,
-            padding:18,
-            background:"linear-gradient(180deg,#ffffff,#f8fbff)",
-            boxShadow:"0 5px 16px rgba(37,99,235,.045)"
-          }}>
-            <div style={{
-              fontSize:12,
-              fontWeight:800,
-              color:"#1d4ed8",
-              letterSpacing:".06em",
-              textTransform:"uppercase"
-            }}>
-              Automated optimization
-            </div>
-
-            <h3 style={{
-              margin:"6px 0 8px"
-            }}>
-              Architecture-family search
-            </h3>
-
-            <p style={{
-              margin:"0 0 14px",
-              color:"#4b5563",
-              lineHeight:1.45,
-              fontSize:14
-            }}>
-              DOE + evolving-SVD search + stochastic robustness validation.
-              The optimizer searches the selected design variables automatically.
-            </p>
-
-            <button
-              disabled={busy || !model || !timingReady}
-              style={{
-                ...primaryButtonStyle,
-                width:"100%",
-                opacity:busy || !model || !timingReady ? 0.55 : 1
-              }}
-              onClick={runOptimize}
-            >
-              {runningAction
-                === "Running robust optimization"
-                ? "Optimization running..."
-                : "Run automated optimization"}
-            </button>
-          </div>
-
-          <div style={{
-            border:"1px solid #ddd6fe",
-            borderRadius:16,
-            padding:18,
-            background:"linear-gradient(180deg,#ffffff,#fbfaff)",
-            boxShadow:"0 5px 16px rgba(109,40,217,.045)"
-          }}>
-            <div style={{
-              fontSize:12,
-              fontWeight:800,
-              color:"#6d28d9",
-              letterSpacing:".06em",
-              textTransform:"uppercase"
-            }}>
-              Manual optimization
-            </div>
-
-            <h3 style={{
-              margin:"6px 0 8px"
-            }}>
-              Manual SVD Explorer
-            </h3>
-
-            <p style={{
-              margin:"0 0 14px",
-              color:"#4b5563",
-              lineHeight:1.45,
-              fontSize:14
-            }}>
-              Inspect stochastic SVD modes, choose a direction and step size,
-              simulate the change, and iteratively navigate the design space.
-            </p>
-
-            <button
-              disabled={busy || !model || !timingReady}
-              style={{
-                ...accentButtonStyle,
-                width:"100%",
-                opacity:busy || !model || !timingReady ? 0.55 : 1
-              }}
-              onClick={openManualSvd}
-            >
-              Open Manual SVD Explorer
-            </button>
-          </div>
-        </div>
-
-        <div style={{
-          marginTop:16,
-          paddingTop:16,
-          borderTop:"1px solid #e5e7eb"
-        }}>
-          <div style={{fontSize:11,fontWeight:800,letterSpacing:".06em",textTransform:"uppercase",color:"#64748b",marginBottom:4}}>Step 4 · Compare</div>
-          <div style={{fontSize:13,color:"#64748b",marginBottom:10}}>
-            Review the selected TO-BE design against the AS-IS baseline.
-          </div>
-
-          <button
-            disabled={busy}
-            style={{
-              ...primaryButtonStyle,
-              opacity:busy ? 0.55 : 1
-            }}
-            onClick={runCompare}
-          >
-            Compare AS-IS vs TO-BE
-          </button>
-        </div>
-      </section>
-
-      {model &&
-        <section style={{
-          ...card,
-          marginTop:18
-        }}>
-          <h2 style={{
-            marginTop:0
-          }}>
-            {model.name}
-          </h2>
-
-          {(model.arrival_profile?.length > 0 ||
-            (model.resources || []).some(r => r.staffing_profile?.length || r.skills?.length)) &&
-            <div style={{
-              margin:"-4px 0 14px",
-              padding:"10px 12px",
-              border:"1px solid #dbeafe",
-              borderRadius:10,
-              background:"#f8fbff",
-              fontSize:12,
-              color:"#475569"
-            }}>
-              {model.arrival_profile?.length > 0
-                ? `Time-varying arrivals: ${model.arrival_profile.length} interval(s). `
-                : ""}
-              {(model.resources || []).some(r => r.staffing_profile?.length)
-                ? "Time-varying staffing enabled. "
-                : ""}
-              {(model.resources || []).some(r => r.skills?.length)
-                ? "Skill-based resource routing enabled where configured."
-                : ""}
-            </div>
-          }
-
-          <div style={{
-            display:"flex",
-            gap:8,
-            flexWrap:"wrap"
-          }}>
-            {(model.activities || []).map(
-              a =>
-              <div
-                key={a.id}
-                style={{
-                  padding:"10px 14px",
-                  border:
-                    "1px solid #d1d5db",
-                  borderRadius:10
-                }}
-              >
-                <b>{a.name}</b>
-
-                <div style={{
-                  fontSize:12,
-                  color:"#6b7280"
-                }}>
-                  {
-                    fmtMin(
-                      a.service_time
-                      ?.mean_minutes
-                    )
-                  } min
-                </div>
-              </div>
-            )}
-          </div>
-        </section>
-      }
-
 
       {model &&
         <section style={{
@@ -3055,8 +2502,145 @@ export default function Home() {
           }}>
             <ProcessGraph
               model={model}
+              selectedActivityId={selectedActivityId}
+              selectedTransitionIndex={selectedTransitionIndex}
+              onSelectActivity={id => {
+                setSelectedActivityId(id);
+                setSelectedTransitionIndex(null);
+              }}
+              onSelectTransition={i => {
+                setSelectedTransitionIndex(i);
+                setSelectedActivityId(null);
+              }}
             />
           </div>
+
+          {(selectedActivityId || selectedTransitionIndex !== null) &&
+            <div style={{...card,marginTop:12,background:"#f8fafc"}}>
+              {selectedActivityId && (() => {
+                const a = (model.activities || []).find(x => x.id === selectedActivityId);
+                if (!a) return null;
+                return (
+                  <>
+                    <div style={{fontWeight:800,marginBottom:4}}>Selected activity</div>
+                    <div style={{fontSize:12,color:"#64748b",marginBottom:10}}>
+                      Model source: <b>{a.model_source || "configured"}</b> · Confidence: <b>{a.confidence || "defined"}</b>
+                    </div>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:10}}>
+                      <label style={{fontSize:12}}>Name
+                        <input value={a.name} onChange={e => updateActivity(a.id,"name",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}/>
+                      </label>
+                      <label style={{fontSize:12}}>How should this step be modeled?
+                        <select value={a.model_source || "configured"} onChange={e => updateActivity(a.id,"model_source",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}>
+                          <option value="configured">Configured model</option>
+                          <option value="event_log">Event-log calibrated</option>
+                          <option value="expert_estimate">Triangular SME estimate</option>
+                          <option value="manual_sample">Manual sample / bootstrap</option>
+                          <option value="borrowed">Borrow another activity</option>
+                          <option value="fixed">Fixed duration</option>
+                          <option value="terminal">Terminal / milestone</option>
+                          <option value="unresolved">Unresolved / data missing</option>
+                        </select>
+                      </label>
+                      {!a.terminal &&
+                        <label style={{fontSize:12}}>Resource pool
+                          <select value={a.resource_pool || ""} onChange={e => updateActivity(a.id,"resource_pool",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}>
+                            <option value="">No resource pool</option>
+                            {resourceOptions(model).map(r => <option key={r} value={r}>{r}</option>)}
+                          </select>
+                        </label>
+                      }
+                    </div>
+
+                    {a.model_source === "unresolved" &&
+                      <div style={{marginTop:10,padding:"10px 12px",background:"#fff7ed",border:"1px solid #fed7aa",borderRadius:8,fontSize:12,color:"#9a3412"}}>
+                        No usable duration observations were available for this step. Choose Terminal, Triangular SME estimate, Manual sample, Borrow another activity, or Fixed duration before simulation/optimization.
+                      </div>
+                    }
+
+                    {a.model_source === "expert_estimate" &&
+                      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:10,marginTop:10}}>
+                        <label style={{fontSize:12}}>Minimum (min)<input type="number" min="0" step="0.1" value={a.service_time?.minimum_minutes ?? ""} onChange={e => updateActivity(a.id,"minimum_minutes",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}/></label>
+                        <label style={{fontSize:12}}>Most likely (min)<input type="number" min="0" step="0.1" value={a.service_time?.mode_minutes ?? ""} onChange={e => updateActivity(a.id,"mode_minutes",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}/></label>
+                        <label style={{fontSize:12}}>Maximum (min)<input type="number" min="0" step="0.1" value={a.service_time?.maximum_minutes ?? ""} onChange={e => updateActivity(a.id,"maximum_minutes",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}/></label>
+                      </div>
+                    }
+
+                    {a.model_source === "manual_sample" &&
+                      <label style={{fontSize:12,display:"block",marginTop:10}}>Observed durations in minutes — paste values separated by commas, spaces, or new lines
+                        <textarea rows="4" defaultValue={(a.service_time?.samples_minutes || []).join(", ")} onBlur={e => updateActivity(a.id,"samples_text",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}/>
+                        <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",marginTop:6}}>
+                          <span style={{color:"#64748b"}}>{(a.service_time?.samples_minutes || []).length} usable observations · empirical bootstrap</span>
+                          <label style={{fontSize:12}}>or upload CSV/TXT durations
+                            <input type="file" accept=".csv,.txt,text/csv,text/plain" onChange={e => loadActivitySamplesFile(a.id,e.target.files?.[0])} style={{display:"block",marginTop:3}}/>
+                          </label>
+                        </div>
+                      </label>
+                    }
+
+                    {a.model_source === "borrowed" &&
+                      <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:10,marginTop:10}}>
+                        <label style={{fontSize:12}}>Borrow distribution from
+                          <select value={a.service_time?.source_activity_id || ""} onChange={e => updateActivity(a.id,"source_activity_id",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}>
+                            <option value="">Select similar activity</option>
+                            {(model.activities || []).filter(x => x.id !== a.id && x.model_source !== "unresolved" && !x.terminal).map(x => <option key={x.id} value={x.id}>{x.name}</option>)}
+                          </select>
+                        </label>
+                        <label style={{fontSize:12}}>Time multiplier
+                          <input type="number" min="0.01" step="0.05" value={a.service_time?.scale ?? 1} onChange={e => updateActivity(a.id,"scale",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}/>
+                        </label>
+                      </div>
+                    }
+
+                    {a.model_source === "fixed" &&
+                      <label style={{fontSize:12,display:"block",marginTop:10,maxWidth:220}}>Fixed duration (min)
+                        <input type="number" min="0.01" step="0.1" value={a.service_time?.mean_minutes ?? 0} onChange={e => updateActivity(a.id,"mean_minutes",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}/>
+                      </label>
+                    }
+
+                    {(a.model_source === "event_log" || a.model_source === "configured") &&
+                      <div style={{fontSize:12,color:"#64748b",marginTop:10}}>
+                        {a.service_time?.distribution} · mean {Number(a.service_time?.mean_minutes || 0).toFixed(1)} min · std {Number(a.service_time?.std_minutes || 0).toFixed(1)} min
+                      </div>
+                    }
+
+                    {a.terminal &&
+                      <div style={{fontSize:12,color:"#64748b",marginTop:10}}>Terminal activities are modeled as milestones with no processing resource or material service duration.</div>
+                    }
+                  </>
+                );
+              })()}
+              {selectedTransitionIndex !== null && (() => {
+                const t = activeTransitions(model)[selectedTransitionIndex];
+                if (!t) return null;
+                const backward = (() => {
+                  const acts = (model.activities || []).map(a => a.id);
+                  return acts.indexOf(t.target) <= acts.indexOf(t.source);
+                })();
+                return (
+                  <>
+                    <div style={{fontWeight:800,marginBottom:10}}>Selected transition {backward ? "· rework/return path" : ""}</div>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:10}}>
+                      <label style={{fontSize:12}}>From
+                        <select value={t.source} onChange={e => updateTransition(selectedTransitionIndex,"source",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}>
+                          {(model.activities || []).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                        </select>
+                      </label>
+                      <label style={{fontSize:12}}>To
+                        <select value={t.target} onChange={e => updateTransition(selectedTransitionIndex,"target",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}>
+                          {(model.activities || []).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                        </select>
+                      </label>
+                      <label style={{fontSize:12}}>Routing probability
+                        <input type="number" min="0" max="1" step="0.01" value={t.probability} onChange={e => updateTransition(selectedTransitionIndex,"probability",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}/>
+                      </label>
+                    </div>
+                    <button style={{...buttonStyle,marginTop:10}} onClick={() => {removeTransition(selectedTransitionIndex); setSelectedTransitionIndex(null);}}>Delete transition</button>
+                  </>
+                );
+              })()}
+            </div>
+          }
 
           <h3>
             Activities
@@ -3234,16 +2818,9 @@ export default function Home() {
                 {activeTransitions(model).map(
                   (t,i) =>
                     <tr key={i}>
-                      <td style={{
-                        padding:"7px 8px 7px 0"
-                      }}>
+                      <td>
                         <select
                           value={t.source}
-                          style={{
-                            minWidth:180,
-                            maxWidth:260,
-                            width:"100%"
-                          }}
                           onChange={
                             e =>
                               updateTransition(
@@ -3268,16 +2845,9 @@ export default function Home() {
                         </select>
                       </td>
 
-                      <td style={{
-                        padding:"7px 8px 7px 0"
-                      }}>
+                      <td>
                         <select
                           value={t.target}
-                          style={{
-                            minWidth:180,
-                            maxWidth:260,
-                            width:"100%"
-                          }}
                           onChange={
                             e =>
                               updateTransition(
@@ -3302,23 +2872,14 @@ export default function Home() {
                         </select>
                       </td>
 
-                      <td style={{
-                        padding:"7px 8px 7px 0"
-                      }}>
+                      <td>
                         <input
                           type="number"
                           min="0"
                           max="1"
-                          step="0.001"
+                          step="0.01"
                           value={
-                            Number.isFinite(
-                              Number(t.probability)
-                            )
-                            ? Math.round(
-                                Number(t.probability)
-                                * 1000
-                              ) / 1000
-                            : 0
+                            t.probability
                           }
                           onChange={
                             e =>
@@ -3329,7 +2890,7 @@ export default function Home() {
                               )
                           }
                           style={{
-                            width:100
+                            width:90
                           }}
                         />
                       </td>
@@ -3382,21 +2943,10 @@ export default function Home() {
                         {r.name || r.id}
                       </b>
 
-                      {r.skills?.length > 0 &&
-                        <div style={{marginTop:5,color:"#64748b"}}>
-                          Skills: {r.skills.join(", ")}
-                        </div>
-                      }
-                      {r.staffing_profile?.length > 0 &&
-                        <div style={{marginTop:3,color:"#64748b"}}>
-                          Staffing profile: {r.staffing_profile.length} interval(s)
-                        </div>
-                      }
-
                       <div style={{
                         marginTop:6
                       }}>
-                        Base capacity
+                        Capacity
                       </div>
 
                       <input
@@ -3417,244 +2967,37 @@ export default function Home() {
                           marginTop:4
                         }}
                       />
+
+                      <div style={{
+                        marginTop:8
+                      }}>
+                        Cost / hour
+                      </div>
+
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={r.cost_per_hour ?? 75}
+                        onChange={
+                          e =>
+                            updateResource(
+                              r.id,
+                              "cost_per_hour",
+                              e.target.value
+                            )
+                        }
+                        style={{
+                          width:"100%",
+                          marginTop:4
+                        }}
+                      />
                     </label>
                   )
                 }
               </div>
             </>
           }
-        </section>
-      }
-
-      {model &&
-        <section style={{
-          ...card,
-          marginTop:18
-        }}>
-          <h2 style={{
-            margin:"0 0 4px"
-          }}>
-            Design Variables
-          </h2>
-
-          <div style={{
-            fontSize:13,
-            color:"#6b7280",
-            lineHeight:1.5,
-            marginBottom:12
-          }}>
-            Choose exactly which numeric variables the optimizer may change.
-            Unchecked variables stay fixed at the current process-model value.
-            Continuous variables move freely within their bounds; quantized
-            variables move in the specified step size. Architecture families
-            remain the discrete outer search.
-          </div>
-
-          {numericDesignVariables(model).length
-            ?
-            <div style={{
-              overflowX:"auto"
-            }}>
-              <table style={{
-                width:"100%",
-                borderCollapse:"collapse",
-                fontSize:13
-              }}>
-                <thead>
-                  <tr>
-                    <th align="left" style={{padding:"7px 5px"}}>Change?</th>
-                    <th align="left" style={{padding:"7px 5px"}}>Variable</th>
-                    <th align="left" style={{padding:"7px 5px"}}>Current</th>
-                    <th align="left" style={{padding:"7px 5px"}}>Type</th>
-                    <th align="left" style={{padding:"7px 5px"}}>Min</th>
-                    <th align="left" style={{padding:"7px 5px"}}>Max</th>
-                    <th align="left" style={{padding:"7px 5px"}}>Step</th>
-                  </tr>
-                </thead>
-
-                <tbody>
-                  {numericDesignVariables(model).map(v => {
-                    const enabled =
-                      designVariableEnabled[v.name] !== false;
-                    const current =
-                      currentDesignValue(v);
-
-                    return (
-                      <tr
-                        key={v.name}
-                        style={{
-                          borderTop:"1px solid #e5e7eb",
-                          opacity:enabled ? 1 : 0.55
-                        }}
-                      >
-                        <td style={{padding:"8px 5px"}}>
-                          <input
-                            type="checkbox"
-                            checked={enabled}
-                            onChange={e =>
-                              setDesignVariableEnabled(prev => ({
-                                ...prev,
-                                [v.name]:e.target.checked
-                              }))
-                            }
-                          />
-                        </td>
-
-                        <td style={{padding:"8px 5px"}}>
-                          <b>{v.name}</b>
-                        </td>
-
-                        <td style={{padding:"8px 5px", color:"#6b7280"}}>
-                          {current === null
-                            ? "model value"
-                            : Number(current).toLocaleString()}
-                        </td>
-
-                        <td style={{padding:"8px 5px"}}>
-                          <select
-                            value={v.kind}
-                            disabled={!enabled || busy}
-                            onChange={e =>
-                              updateDesignVariable(
-                                v.name,
-                                "kind",
-                                e.target.value
-                              )
-                            }
-                          >
-                            <option value="continuous">Continuous</option>
-                            <option value="quantized">Quantized</option>
-                          </select>
-                        </td>
-
-                        <td style={{padding:"8px 5px"}}>
-                          <input
-                            type="number"
-                            value={v.lower ?? ""}
-                            disabled={!enabled || busy}
-                            onChange={e =>
-                              updateDesignVariable(
-                                v.name,
-                                "lower",
-                                e.target.value
-                              )
-                            }
-                            style={{width:95}}
-                          />
-                        </td>
-
-                        <td style={{padding:"8px 5px"}}>
-                          <input
-                            type="number"
-                            value={v.upper ?? ""}
-                            disabled={!enabled || busy}
-                            onChange={e =>
-                              updateDesignVariable(
-                                v.name,
-                                "upper",
-                                e.target.value
-                              )
-                            }
-                            style={{width:95}}
-                          />
-                        </td>
-
-                        <td style={{padding:"8px 5px"}}>
-                          {v.kind === "quantized"
-                            ?
-                            <input
-                              type="number"
-                              min="0.000001"
-                              value={v.step ?? 1}
-                              disabled={!enabled || busy}
-                              onChange={e =>
-                                updateDesignVariable(
-                                  v.name,
-                                  "step",
-                                  e.target.value
-                                )
-                              }
-                              style={{width:85}}
-                            />
-                            :
-                            <span style={{color:"#9ca3af"}}>—</span>
-                          }
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-
-              <div style={{
-                fontSize:12,
-                color:"#6b7280",
-                marginTop:10
-              }}>
-                {numericDesignVariables(model).filter(
-                  v => designVariableEnabled[v.name] !== false
-                ).length} of {numericDesignVariables(model).length}
-                {" "}numeric design variables selected for DOE / evolving-SVD search.
-              </div>
-            </div>
-            :
-            <div style={{
-              padding:"12px 14px",
-              background:"#f9fafb",
-              borderRadius:8,
-              color:"#6b7280",
-              fontSize:13
-            }}>
-              This model does not currently expose any continuous or quantized
-              design variables.
-            </div>
-          }
-        </section>
-      }
-
-      {manualCommitted &&
-        <section style={{
-          ...card,
-          marginTop:18,
-          border:"1px solid #86efac",
-          background:"#f0fdf4"
-        }}>
-          <div style={{
-            display:"flex",
-            justifyContent:"space-between",
-            gap:12,
-            flexWrap:"wrap",
-            alignItems:"center"
-          }}>
-            <div>
-              <h2 style={{margin:"0 0 4px"}}>
-                Committed manual design
-              </h2>
-              <div style={{fontSize:13,color:"#166534"}}>
-                This design was committed from the Manual SVD Explorer and
-                is now the TO-BE design used by Compare AS-IS vs TO-BE.
-              </div>
-            </div>
-            <button
-              style={buttonStyle}
-              onClick={openManualSvd}
-            >
-              Continue manual exploration
-            </button>
-          </div>
-
-          <div style={{
-            marginTop:10,
-            fontSize:13,
-            color:"#374151",
-            lineHeight:1.6
-          }}>
-            Architecture: <b>{manualCommitted.architecture_id}</b> · {
-              Object.entries(manualCommitted.design || {})
-                .map(([k,v]) => `${k}=${Number(v).toFixed(3)}`)
-                .join(" · ")
-            }
-          </div>
         </section>
       }
 
@@ -3704,24 +3047,6 @@ export default function Home() {
               value={
                 fmtFlow(sim.metrics
                   .flow_balance)
-              }
-            />
-
-            <Metric
-              label="Mean cycle (min)"
-              value={
-                sim.metrics
-                .mean_cycle_minutes
-                .toFixed(1)
-              }
-            />
-
-            <Metric
-              label="Median / P50 cycle (min)"
-              value={
-                sim.metrics
-                .median_cycle_minutes
-                .toFixed(1)
               }
             />
 
@@ -3807,6 +3132,72 @@ export default function Home() {
             Candidate comparisons use the same random seeds.
             Final validation uses 40 independent replications.
           </p>
+
+          {opt.results?.length > 0 &&
+            (() => {
+              const rec =
+                opt.results[0];
+
+              const best =
+                rec.best;
+
+              const rob =
+                rec.robustness;
+
+              return (
+                <div style={{
+                  ...card,
+                  background:"#f0fdf4",
+                  border:"1px solid #bbf7d0",
+                  marginBottom:16
+                }}>
+                  <div style={{
+                    fontSize:12,
+                    fontWeight:800,
+                    color:"#166534",
+                    textTransform:"uppercase"
+                  }}>
+                    Recommended architecture
+                  </div>
+
+                  <div style={{
+                    fontSize:22,
+                    fontWeight:800,
+                    marginTop:4
+                  }}>
+                    {rec.architecture}
+                  </div>
+
+                  <div style={{
+                    fontSize:13,
+                    color:"#475569",
+                    marginTop:6,
+                    lineHeight:1.5
+                  }}>
+                    Selected because it {
+                      rec.robust_target_met
+                      ? "meets the robustness target and is the lowest-cost target-meeting architecture"
+                      : "is the strongest available architecture even though the robustness target is not yet met"
+                    }.
+                    {best?.metrics?.annual_cost !== undefined
+                      ? ` Annual cost ${money(best.metrics.annual_cost)}.`
+                      : ""}
+                    {rob?.probability !== undefined
+                      ? ` Final replicated feasibility ${fmtPct(rob.probability)}.`
+                      : ""}
+                  </div>
+
+                  {best?.design && designChangeLines(model,best.design).length > 0 &&
+                    <div style={{marginTop:10,fontSize:12,color:"#334155"}}>
+                      <b>Why this design:</b> {designChangeLines(model,best.design).slice(0,6).join(" · ")}
+                    </div>
+                  }
+                </div>
+              );
+            })()
+          }
+
+          <DesignSpaceChart results={opt.results} target={0.90} />
 
           {opt.results.map(
             (r,idx) => {
@@ -4001,16 +3392,6 @@ export default function Home() {
                           fmtFlow(b.metrics
                             .flow_balance)
                         } ·
-                        {" "}Mean cycle {
-                          b.metrics
-                          .mean_cycle_minutes
-                          .toFixed(1)
-                        } min ·
-                        {" "}Median {
-                          b.metrics
-                          .median_cycle_minutes
-                          .toFixed(1)
-                        } min ·
                         {" "}P95 {
                           b.metrics
                           .p95_cycle_minutes
@@ -4205,6 +3586,43 @@ export default function Home() {
                           )
                         }
                       </div>
+
+                      {rob
+                        .probability_backlog_growth_above_0_05
+                        >= 0.25
+                        &&
+                        <div style={{
+                          marginTop:8,
+                          padding:"8px 10px",
+                          borderRadius:8,
+                          background:
+                            rob
+                            .probability_backlog_growth_above_0_05
+                            >= 0.50
+                            ? "#fef2f2"
+                            : "#fffbeb",
+                          color:
+                            rob
+                            .probability_backlog_growth_above_0_05
+                            >= 0.50
+                            ? "#991b1b"
+                            : "#92400e",
+                          fontSize:12,
+                          fontWeight:700
+                        }}>
+                          {rob
+                            .probability_backlog_growth_above_0_05
+                            >= 0.50
+                            ? "High"
+                            : "Elevated"
+                          } backlog-drift risk: {
+                            fmtPct(
+                              rob
+                              .probability_backlog_growth_above_0_05
+                            )
+                          } of validation runs exceeded +0.05 backlog/hr.
+                        </div>
+                      }
                     </div>
                   }
                 </div>
@@ -4222,54 +3640,145 @@ export default function Home() {
           <h2 style={{
             marginTop:0
           }}>
-            AS-IS vs TO-BE
+            AS-IS vs selected TO-BE
           </h2>
 
           <div style={{
-            display:"grid",
-            gridTemplateColumns:
-              "repeat(2,minmax(0,1fr))",
-            gap:16
+            fontSize:13,
+            color:"#6b7280",
+            marginBottom:12
           }}>
-            <div>
-              <h3>
-                Baseline
-              </h3>
+            {cmp.baseline_architecture} → {cmp.future_architecture}
+            {cmp.comparison_method &&
+              <>
+                {" "}· {
+                  cmp.comparison_method.replications
+                } paired replications · {
+                  cmp.comparison_method.cases_per_replication
+                } cases each · common random numbers
+              </>
+            }
+          </div>
 
-              <pre style={{
-                whiteSpace:"pre-wrap",
-                fontSize:13
-              }}>
-                {
-                  JSON.stringify(
-                    cmp
-                    .baseline_metrics,
-                    null,
-                    2
-                  )
-                }
-              </pre>
+          {model && opt?.results?.[0]?.best &&
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(420px,1fr))",gap:14,marginBottom:16}}>
+              <div>
+                <div style={{fontWeight:800,marginBottom:6}}>AS-IS workflow</div>
+                <ProcessGraph model={model} />
+              </div>
+              <div>
+                <div style={{fontWeight:800,marginBottom:6}}>Selected TO-BE workflow</div>
+                <ProcessGraph model={applyDesignToModel(model,cmp.future_architecture,opt.results[0].best.design)} />
+              </div>
             </div>
+          }
 
-            <div>
-              <h3>
-                Future state
-              </h3>
-
-              <pre style={{
-                whiteSpace:"pre-wrap",
-                fontSize:13
-              }}>
-                {
-                  JSON.stringify(
-                    cmp
-                    .future_metrics,
-                    null,
-                    2
-                  )
-                }
-              </pre>
-            </div>
+          <div style={{
+            overflowX:"auto"
+          }}>
+            <table style={{
+              width:"100%",
+              borderCollapse:"collapse",
+              fontSize:13
+            }}>
+              <thead>
+                <tr>
+                  <th align="left" style={{padding:8}}>Metric</th>
+                  <th align="right" style={{padding:8}}>AS-IS</th>
+                  <th align="right" style={{padding:8}}>TO-BE</th>
+                  <th align="right" style={{padding:8}}>Change</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[
+                  [
+                    "Annual cost",
+                    cmp.baseline_metrics.annual_cost,
+                    cmp.future_metrics.annual_cost,
+                    money,
+                    true,
+                    "relative"
+                  ],
+                  [
+                    "Throughput / hr",
+                    cmp.baseline_metrics.throughput_per_hour,
+                    cmp.future_metrics.throughput_per_hour,
+                    v => Number(v).toFixed(2),
+                    false,
+                    "relative"
+                  ],
+                  [
+                    "Flow balance",
+                    cmp.baseline_metrics.flow_balance,
+                    cmp.future_metrics.flow_balance,
+                    fmtFlow,
+                    false,
+                    "points"
+                  ],
+                  [
+                    "P95 cycle (min)",
+                    cmp.baseline_metrics.p95_cycle_minutes,
+                    cmp.future_metrics.p95_cycle_minutes,
+                    v => Number(v).toFixed(1),
+                    true,
+                    "relative"
+                  ],
+                  [
+                    "SLA attainment",
+                    cmp.baseline_metrics.sla_attainment,
+                    cmp.future_metrics.sla_attainment,
+                    fmtPct,
+                    false,
+                    "points"
+                  ],
+                  [
+                    "Max utilization",
+                    cmp.baseline_metrics.max_resource_utilization,
+                    cmp.future_metrics.max_resource_utilization,
+                    fmtPct,
+                    true,
+                    "points"
+                  ],
+                  [
+                    "Backlog growth / hr",
+                    cmp.baseline_metrics.backlog_growth_per_hour,
+                    cmp.future_metrics.backlog_growth_per_hour,
+                    v => Number(v).toFixed(2),
+                    true,
+                    "relative"
+                  ]
+                ].map(([label,a,b,fmt,lowerBetter,changeType]) => {
+                  const delta = Number(b) - Number(a);
+                  const pct = Math.abs(Number(a)) > 1e-9
+                    ? 100 * delta / Math.abs(Number(a))
+                    : null;
+                  const improved = lowerBetter
+                    ? delta < 0
+                    : delta > 0;
+                  return (
+                    <tr key={label} style={{borderTop:"1px solid #eee"}}>
+                      <td style={{padding:8}}>{label}</td>
+                      <td align="right" style={{padding:8}}>{fmt(a)}</td>
+                      <td align="right" style={{padding:8,fontWeight:700}}>{fmt(b)}</td>
+                      <td align="right" style={{
+                        padding:8,
+                        color: Math.abs(delta) < 1e-9
+                          ? "#6b7280"
+                          : improved
+                            ? "#166534"
+                            : "#991b1b"
+                      }}>
+                        {changeType === "points"
+                          ? fmtPctPoints(delta)
+                          : pct === null
+                            ? `${delta >= 0 ? "+" : ""}${delta.toFixed(2)}`
+                            : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         </section>
       }

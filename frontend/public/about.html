@@ -551,8 +551,32 @@ Compare architectures</pre>
       </ul>
     </section>
 
-    <section class="section" id="versions">
-      <h2>11. Version history</h2>
+    <section class="section" id="hybrid-modeling">
+      <h2>11. Hybrid process modeling</h2>
+      <p>
+        Enterprise event data is rarely complete across every activity in an end-to-end process.
+        v0.13.1 therefore allows a single process model to combine instrumented and uninstrumented
+        steps while retaining explicit provenance for each activity model.
+      </p>
+      <p>Each activity can be modeled from:</p>
+      <ul>
+        <li><strong>Event-log calibration</strong> when usable timestamps are available.</li>
+        <li><strong>Triangular SME estimates</strong> using minimum, most-likely, and maximum duration.</li>
+        <li><strong>Manual samples</strong> using empirical bootstrap sampling from observed durations.</li>
+        <li><strong>A borrowed distribution</strong> from a similar activity with an optional time multiplier.</li>
+        <li><strong>A fixed duration</strong> for deterministic delays or tasks.</li>
+        <li><strong>A terminal / milestone classification</strong> for completion states that have no service duration.</li>
+      </ul>
+      <p>
+        Missing duration observations are no longer silently replaced by a fallback distribution.
+        They are marked <strong>unresolved</strong> and must be classified before simulation or optimization.
+        The model also records source and confidence so users can distinguish data-calibrated behavior
+        from assumptions and identify where additional measurement would add value.
+      </p>
+    </section>
+
+<section class="section" id="versions">
+      <h2>12. Version history</h2>
       <table>
         <thead>
           <tr><th>Version</th><th>Principal advance</th></tr>
@@ -571,16 +595,20 @@ Compare architectures</pre>
           <tr><td>v0.11.2</td><td>General node-edge workflow graph</td></tr>
           <tr><td>v0.11.3</td><td>Correct architecture-level connectivity and transition persistence</td></tr>
           <tr><td>v0.12</td><td>Generic resource pools, generic capacity variables, resource calibration, AS-IS digital-twin summary, and generic AS-IS vs TO-BE comparison</td></tr>
+          <tr><td>v0.12.1</td><td>Replicated paired AS-IS/TO-BE comparison, common random numbers, backlog-risk warnings, and clearer reporting</td></tr>
+          <tr><td>v0.13</td><td>Interactive process design studio, clickable workflow editing, process variants, AS-IS/TO-BE graphs, and design-space visualization</td></tr>
+          <tr><td>v0.13.1</td><td>Hybrid process modeling for uninstrumented steps using triangular estimates, manual empirical samples, borrowed distributions, fixed durations, and terminal milestones</td></tr>
         </tbody>
       </table>
     </section>
 
     <section class="section" id="next">
-      <h2>12. Recommended next stage</h2>
+      <h2>13. Recommended next stage</h2>
       <p>
-        The next major technical step is to make resources and workflow semantics fully generic.
-        The current optimizer still contains some design-variable assumptions originating in the
-        original demonstration process.
+        The next major technical step is uncertainty-aware design optimization: use activity-model
+        provenance and confidence to identify recommendations that are sensitive to weakly measured
+        or expert-estimated steps, and show where better data collection would materially change the
+        recommended TO-BE design.
       </p>
 
       <p>
@@ -622,7 +650,7 @@ Cost / performance / robustness comparison</pre>
     </section>
 
     <div class="footer">
-      Process Design Space Explorer — technical overview through v0.13.0
+      Process Design Space Explorer — technical overview through v0.13.1
     </div>
   </div>
 </body>
