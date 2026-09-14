@@ -362,7 +362,6 @@ export default function ManualSVDPage() {
           <nav style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
             <a href="/" style={{padding:"7px 10px",borderRadius:8,color:"#475569",fontSize:13,fontWeight:700,textDecoration:"none"}}>Workspace</a>
             <a href="/manual-svd" style={{padding:"7px 10px",borderRadius:8,background:"#eef2ff",color:"#4338ca",fontSize:13,fontWeight:700,textDecoration:"none"}}>Manual SVD</a>
-            <a href="/auth/logout" style={{padding:"7px 10px",borderRadius:8,color:"#64748b",fontSize:13,fontWeight:700,textDecoration:"none"}}>Sign out</a>
           </nav>
         </div>
         <div style={{padding:"26px 24px 24px",background:"linear-gradient(135deg,#ffffff 0%,#f8fafc 58%,#eef2ff 100%)"}}>
