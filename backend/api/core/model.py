@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 
 VariableKind = Literal['fixed', 'continuous', 'quantized', 'discrete']
 DistributionKind = Literal['constant', 'normal', 'lognormal', 'exponential', 'triangular', 'empirical', 'borrowed', 'unresolved']
+RoutingPolicy = Literal['fixed_pool', 'earliest_available_skill']
 
 
 class DesignVariable(BaseModel):
@@ -41,6 +42,20 @@ class ServiceTime(BaseModel):
     scale: float = 1.0
 
 
+class StaffingInterval(BaseModel):
+    start_minute: float
+    end_minute: float
+    capacity: int
+    label: str | None = None
+
+
+class ArrivalInterval(BaseModel):
+    start_minute: float
+    end_minute: float
+    rate_per_hour: float
+    label: str | None = None
+
+
 class Activity(BaseModel):
     id: str
     name: str
@@ -50,6 +65,9 @@ class Activity(BaseModel):
     model_source: str = 'configured'
     confidence: str = 'defined'
     terminal: bool = False
+    required_skills: list[str] = Field(default_factory=list)
+    eligible_resource_pools: list[str] = Field(default_factory=list)
+    routing_policy: RoutingPolicy = 'fixed_pool'
 
 
 class Transition(BaseModel):
@@ -65,6 +83,8 @@ class ResourcePool(BaseModel):
     # Explicit resource cost makes calibrated models independent of demo-specific
     # activity naming. Existing models that omit it remain backward compatible.
     cost_per_hour: float | None = None
+    skills: list[str] = Field(default_factory=list)
+    staffing_profile: list[StaffingInterval] = Field(default_factory=list)
 
 
 class Architecture(BaseModel):
@@ -75,6 +95,7 @@ class Architecture(BaseModel):
 
 
 class ProcessModel(BaseModel):
+    workflow_class: Literal['general', 'contact_center'] = 'general'
     id: str = 'process-1'
     name: str = 'Process Model'
     start_activity: str
@@ -85,6 +106,9 @@ class ProcessModel(BaseModel):
     variables: list[DesignVariable]
     arrival_rate_per_hour: float = 6.0
     sla_minutes: float = 480.0
+    arrival_profile: list[ArrivalInterval] = Field(default_factory=list)
+    arrival_profile_repeat_minutes: float = 1440.0
+    staffing_profile_repeat_minutes: float = 1440.0
 
     def activity_map(self):
         return {a.id: a for a in self.activities}

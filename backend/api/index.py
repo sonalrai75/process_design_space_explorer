@@ -12,6 +12,10 @@ from .core.model import ProcessModel
 from .core.mining import mine_log, compare_mined_logs
 from .core.simulation import simulate
 from .core.calibration import preview_event_log, calibrate_event_log
+from .core.contact_center_excel import (
+    preview_contact_center_workbook,
+    import_contact_center_workbook,
+)
 from .core.optimization import (
     Constraint,
     optimize_families,
@@ -20,7 +24,7 @@ from .core.optimization import (
 
 app = FastAPI(
     title="Process Design Space Platform API",
-    version="0.13.1",
+    version="0.13.2",
 )
 
 app.add_middleware(
@@ -102,7 +106,7 @@ class CompareRequest(BaseModel):
 def health():
     return {
         "ok": True,
-        "version": "0.13.1",
+        "version": "0.13.2",
     }
 
 
@@ -135,13 +139,12 @@ def simulate_endpoint(
             "structural_capacity"
         ] = capacity
 
-        out[
-            "metrics"
-        ][
-            "max_resource_utilization"
-        ] = capacity[
-            "max_resource_utilization"
-        ]
+        # Preserve utilization measured by the simulator for time-varying
+        # staffing and skill-based routing. Fall back to structural capacity.
+        out["metrics"].setdefault(
+            "max_resource_utilization",
+            capacity["max_resource_utilization"],
+        )
 
         realized = out["metrics"].get(
             "realized_arrival_rate_per_hour",
@@ -170,6 +173,32 @@ def simulate_endpoint(
             status_code=400,
             detail=str(e),
         )
+
+
+
+
+@app.post("/api/contact-center/preview")
+async def contact_center_preview(file: UploadFile = File(...)):
+    try:
+        content = await file.read()
+        return preview_contact_center_workbook(
+            file.filename or "contact_center.xlsx",
+            content,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/contact-center/import")
+async def contact_center_import(file: UploadFile = File(...)):
+    try:
+        content = await file.read()
+        return import_contact_center_workbook(
+            file.filename or "contact_center.xlsx",
+            content,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/api/event-log/preview")

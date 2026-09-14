@@ -118,24 +118,35 @@ def _service_time_spec(samples: list[float]) -> dict:
             "distribution": "triangular",
             "mean_minutes": float(np.mean(clean)),
             "std_minutes": float(np.std(clean, ddof=1)) if n > 1 else 0.0,
-            "min_minutes": lo,
+            "minimum_minutes": lo,
             "mode_minutes": med,
-            "max_minutes": max(hi, lo + 0.01),
+            "maximum_minutes": max(hi, lo + 0.01),
             "sample_count": n,
             "confidence": "low",
             "fallback_reason": "Fewer than 10 observed service times; triangular fallback used.",
         }
-    # Very sparse: widen around what little is known rather than pretending precision.
-    center = float(np.median(clean)) if clean else 15.0
+    if n == 0:
+        return {
+            "distribution": "unresolved",
+            "mean_minutes": 0.0,
+            "std_minutes": 0.0,
+            "samples_minutes": None,
+            "sample_count": 0,
+            "confidence": "insufficient",
+            "fallback_reason": "No observed service times; user must resolve this activity before simulation.",
+        }
+
+    # Very sparse: use a broad triangular estimate but flag it for review.
+    center = float(np.median(clean))
     lo = max(0.01, center * 0.5)
     hi = max(lo + 0.01, center * 1.75)
     return {
         "distribution": "triangular",
         "mean_minutes": center,
         "std_minutes": 0.0,
-        "min_minutes": lo,
+        "minimum_minutes": lo,
         "mode_minutes": center,
-        "max_minutes": hi,
+        "maximum_minutes": hi,
         "sample_count": n,
         "confidence": "insufficient",
         "fallback_reason": "Fewer than 3 observed service times; broad triangular fallback requires review.",
@@ -314,6 +325,9 @@ def import_contact_center_workbook(filename: str, content: bytes) -> dict:
             "required_skills": [],
             "eligible_resource_pools": [],
             "routing_policy": "fixed_pool",
+            "model_source": "configured",
+            "confidence": "defined",
+            "terminal": False,
         }
     ]
 
@@ -342,6 +356,9 @@ def import_contact_center_workbook(filename: str, content: bytes) -> dict:
             "required_skills": [required] if required else [],
             "eligible_resource_pools": eligible,
             "routing_policy": "earliest_available_skill" if len(eligible) > 1 or required else "fixed_pool",
+            "model_source": "event_log" if spec.get("sample_count", 0) > 0 else "unresolved",
+            "confidence": spec.get("confidence") or "insufficient",
+            "terminal": False,
         })
 
     activities.append({
@@ -353,6 +370,9 @@ def import_contact_center_workbook(filename: str, content: bytes) -> dict:
         "required_skills": [],
         "eligible_resource_pools": [],
         "routing_policy": "fixed_pool",
+        "model_source": "terminal",
+        "confidence": "defined",
+        "terminal": True,
     })
 
     variables = []
