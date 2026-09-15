@@ -22,6 +22,11 @@ export default function CellularizationPage() {
   const [experiment,setExperiment] = useState(null);
   const [experimentStatus,setExperimentStatus] = useState("");
   const [experimentBusy,setExperimentBusy] = useState(false);
+  const [phase2Experiment,setPhase2Experiment] = useState(null);
+  const [phase2Status,setPhase2Status] = useState("");
+  const [phase2Busy,setPhase2Busy] = useState(false);
+  const [overflowWaitThreshold,setOverflowWaitThreshold] = useState(30);
+  const [maxOverflowPercent,setMaxOverflowPercent] = useState(100);
 
   useEffect(() => {
     let cancelled = false;
@@ -153,6 +158,42 @@ export default function CellularizationPage() {
     return activitiesValid && resourcesExact;
   }, [model,cells,enabledActivities,activityAssignments,capacityUse]);
 
+  const phase2Ready = useMemo(() => {
+    return phase1Ready && cells.some(c => !!c.cross_cell_eligible);
+  }, [phase1Ready,cells]);
+
+  async function runPhase2Experiment() {
+    if (!model || !phase2Ready || !activeArchitecture) return;
+    setPhase2Experiment(null);
+    setPhase2Busy(true);
+    setPhase2Status("Running paired Global vs Cellular vs Controlled Overflow experiment...");
+    try {
+      const experimentModel = {...model,cells};
+      const r = await fetch(`${API}/api/experiments/cellularization/phase2`, {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          model:experimentModel,
+          architecture_id:activeArchitecture.id,
+          cases:1200,
+          seed:900,
+          replications:12,
+          local_wait_threshold_minutes:Math.max(0,Number(overflowWaitThreshold) || 0),
+          max_overflow_fraction:Math.min(1,Math.max(0,(Number(maxOverflowPercent) || 0)/100))
+        })
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "Controlled-overflow experiment failed");
+      setPhase2Experiment(data);
+      setPhase2Status(`Completed ${data.replications || 0} paired replications.`);
+      setTimeout(() => document.getElementById("phase2-results")?.scrollIntoView({behavior:"smooth",block:"start"}),50);
+    } catch (e) {
+      setPhase2Status(`Experiment error: ${e.message || e}`);
+    } finally {
+      setPhase2Busy(false);
+    }
+  }
+
   async function runPhase1Experiment() {
     if (!model || !phase1Ready || !activeArchitecture) return;
     setExperiment(null);
@@ -250,6 +291,10 @@ export default function CellularizationPage() {
                   <div style={{fontSize:11,fontWeight:800,color:"#4f46e5"}}>CELL {idx+1}</div>
                   <input value={cell.name || ""} onChange={e => updateCell(cell.id,{name:e.target.value})} style={{flex:1,minWidth:160,padding:"7px 9px",border:"1px solid #cbd5e1",borderRadius:7,fontWeight:700}} />
                 </div>
+                <label style={{display:"flex",alignItems:"center",gap:6,fontSize:12,color:"#475569",fontWeight:700}}>
+                  <input type="checkbox" checked={!!cell.cross_cell_eligible} onChange={e => updateCell(cell.id,{cross_cell_eligible:e.target.checked})} />
+                  May receive overflow
+                </label>
                 <button onClick={() => removeCell(cell.id)} style={{padding:"7px 10px",borderRadius:7,border:"1px solid #fecaca",background:"#fff",color:"#b91c1c",fontWeight:700,cursor:"pointer"}}>Remove</button>
               </div>
 
@@ -327,12 +372,53 @@ export default function CellularizationPage() {
           </div>
         </section>
 
+        <section style={{...card,marginTop:18,background:"#f8fafc"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+            <div>
+              <h2 style={{margin:"0 0 5px"}}>Phase 2 experiment — Controlled Overflow</h2>
+              <div style={muted}>Local cell capacity is always tried first. Cross-cell capacity is used only after the local wait exceeds the trigger, only into cells explicitly marked <b>May receive overflow</b>, and without creating any additional capacity.</div>
+            </div>
+            <button
+              onClick={runPhase2Experiment}
+              disabled={!phase2Ready || phase2Busy}
+              style={{padding:"10px 14px",borderRadius:8,border:"1px solid #0f766e",background:phase2Ready && !phase2Busy?"#0f766e":"#cbd5e1",color:"#fff",fontWeight:800,cursor:phase2Ready && !phase2Busy?"pointer":"default"}}
+            >
+              {phase2Busy ? "Running controlled overflow..." : "Run Controlled Overflow Comparison"}
+            </button>
+          </div>
+
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:10,marginTop:14}}>
+            <label style={{fontSize:12,fontWeight:700}}>Local wait trigger (minutes)
+              <input type="number" min="0" step="1" value={overflowWaitThreshold} onChange={e => setOverflowWaitThreshold(e.target.value)} style={{display:"block",width:"100%",marginTop:5,padding:"7px 8px",border:"1px solid #cbd5e1",borderRadius:7}} />
+            </label>
+            <label style={{fontSize:12,fontWeight:700}}>Maximum overflow share (%)
+              <input type="number" min="0" max="100" step="1" value={maxOverflowPercent} onChange={e => setMaxOverflowPercent(e.target.value)} style={{display:"block",width:"100%",marginTop:5,padding:"7px 8px",border:"1px solid #cbd5e1",borderRadius:7}} />
+            </label>
+          </div>
+
+          {!phase2Ready && <div style={{marginTop:12,padding:"10px 12px",border:"1px solid #fed7aa",background:"#fff7ed",borderRadius:8,fontSize:12,color:"#9a3412"}}>Phase 2 requires a valid Phase 1 cell design and at least one cell marked <b>May receive overflow</b>.</div>}
+          {phase2Status && <div style={{marginTop:12,fontSize:12,fontWeight:700,color:phase2Status.startsWith("Experiment error")?"#b91c1c":"#475569"}}>{phase2Status}</div>}
+        </section>
+
         {experiment && <section id="phase1-results" style={{...card,marginTop:18}}>
           <h2 style={{marginTop:0}}>Phase 1 paired results</h2>
           <div style={{fontSize:12,color:"#64748b",marginBottom:12}}>
             {experiment.replications} replications · {experiment.cases_per_replication} cases per replication · cellular minus global deltas are based on paired common-random-number runs.
           </div>
           <ComparisonTable experiment={experiment} />
+        </section>}
+
+        {phase2Experiment && <section id="phase2-results" style={{...card,marginTop:18}}>
+          <h2 style={{marginTop:0}}>Phase 2 controlled-overflow results</h2>
+          <div style={{fontSize:12,color:"#64748b",marginBottom:12,lineHeight:1.55}}>
+            {phase2Experiment.replications} replications · {phase2Experiment.cases_per_replication} cases per replication · trigger {fmtNum(phase2Experiment.overflow_policy?.local_wait_threshold_minutes,2)} min · max overflow {fmtPct(phase2Experiment.overflow_policy?.max_overflow_fraction)}.
+          </div>
+          <Phase2ComparisonTable experiment={phase2Experiment} />
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))",gap:10,marginTop:14}}>
+            <Summary label="Mean overflow share" value={fmtPct(phase2Experiment.overflow?.mean_fraction)} />
+            <Summary label="Mean overflow count" value={fmtNum(phase2Experiment.overflow?.mean_count,2)} />
+            <Summary label="Mean wait saved / overflow" value={`${fmtNum(phase2Experiment.overflow?.mean_wait_saved_minutes,2)} min`} />
+          </div>
         </section>}
       </>}
     </main>
@@ -389,6 +475,51 @@ function ComparisonTable({experiment}) {
       <tbody>{rows.map(([label,key,type]) => <tr key={key}>
         <td style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9",fontWeight:700}}>{label}</td>
         <td align="right" style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9"}}>{show(g[key],type)}</td>
+        <td align="right" style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9"}}>{show(c[key],type)}</td>
+        <td align="right" style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9",fontWeight:700}}>{showDelta(d[key],type)}</td>
+      </tr>)}</tbody>
+    </table>
+  </div>;
+}
+
+function Phase2ComparisonTable({experiment}) {
+  const g = experiment?.global?.metrics || {};
+  const n = experiment?.cellular_no_overflow?.metrics || {};
+  const c = experiment?.cellular_controlled_overflow?.metrics || {};
+  const d = experiment?.paired_delta_controlled_minus_no_overflow?.mean || {};
+  const rows = [
+    ["Throughput / hr","throughput_per_hour","num"],
+    ["Mean cycle (min)","mean_cycle_minutes","num"],
+    ["Median cycle (min)","median_cycle_minutes","num"],
+    ["P95 cycle (min)","p95_cycle_minutes","num"],
+    ["SLA attainment","sla_attainment","pct"],
+    ["Average WIP","avg_wip","num"],
+    ["Max resource utilization","max_resource_utilization","pct"],
+    ["Backlog growth / hr","backlog_growth_per_hour","num"],
+    ["Annual cost","annual_cost","money"]
+  ];
+  const show = (v,type) => type === "pct" ? fmtPct(v) : type === "money" ? (Number.isFinite(Number(v)) ? `$${Number(v).toLocaleString(undefined,{maximumFractionDigits:0})}` : "—") : fmtNum(v,2);
+  const showDelta = (v,type) => {
+    const x=Number(v);
+    if (!Number.isFinite(x)) return "—";
+    const sign=x>0?"+":"";
+    if (type === "pct") return `${sign}${fmtNum(100*x,2)} pp`;
+    if (type === "money") return `${sign}$${Math.round(x).toLocaleString()}`;
+    return `${sign}${fmtNum(x,2)}`;
+  };
+  return <div style={{overflowX:"auto"}}>
+    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+      <thead><tr>
+        <th align="left" style={{padding:"8px 6px",borderBottom:"1px solid #e2e8f0"}}>Metric</th>
+        <th align="right" style={{padding:"8px 6px",borderBottom:"1px solid #e2e8f0"}}>Global</th>
+        <th align="right" style={{padding:"8px 6px",borderBottom:"1px solid #e2e8f0"}}>Cellular / no overflow</th>
+        <th align="right" style={{padding:"8px 6px",borderBottom:"1px solid #e2e8f0"}}>Controlled overflow</th>
+        <th align="right" style={{padding:"8px 6px",borderBottom:"1px solid #e2e8f0"}}>Controlled − No overflow</th>
+      </tr></thead>
+      <tbody>{rows.map(([label,key,type]) => <tr key={key}>
+        <td style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9",fontWeight:700}}>{label}</td>
+        <td align="right" style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9"}}>{show(g[key],type)}</td>
+        <td align="right" style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9"}}>{show(n[key],type)}</td>
         <td align="right" style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9"}}>{show(c[key],type)}</td>
         <td align="right" style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9",fontWeight:700}}>{showDelta(d[key],type)}</td>
       </tr>)}</tbody>

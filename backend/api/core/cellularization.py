@@ -305,3 +305,168 @@ def run_phase1_paired_comparison(
             for cell in model.cells
         ],
     }
+
+def build_cellular_controlled_overflow_model(
+    model: ProcessModel,
+    architecture_id: str,
+) -> tuple[ProcessModel, dict[str, Any], dict[str, Any]]:
+    """Build a cellular model that preserves exclusive capacity but allows
+    selected cells to receive overflow work. Local resources remain preferred;
+    the simulator only uses remote capacity when the configured wait trigger is met.
+    """
+    cloned, validation = build_cellular_no_overflow_model(model, architecture_id)
+    activity_to_cell = validation["activity_to_cell"]
+    receiver_cells = {c.id for c in model.cells if c.cross_cell_eligible}
+    original_resource_map = model.resource_map()
+
+    synthetic_for: dict[tuple[str, str], str] = {}
+    resource_cell: dict[str, str] = {}
+    for resource in cloned.resources:
+        if "__cell__" not in resource.id:
+            continue
+        original_id, cell_id = resource.id.split("__cell__", 1)
+        synthetic_for[(original_id, cell_id)] = resource.id
+        resource_cell[resource.id] = cell_id
+
+    for activity in cloned.activities:
+        home_cell = activity_to_cell.get(activity.id)
+        if not home_cell:
+            continue
+        original_activity = model.activity_map()[activity.id]
+        if original_activity.terminal or (
+            not original_activity.resource_pool
+            and not original_activity.required_skills
+            and not original_activity.eligible_resource_pools
+        ):
+            continue
+
+        required = set(original_activity.required_skills or [])
+        explicit_original = set(original_activity.eligible_resource_pools or [])
+        eligible = list(activity.eligible_resource_pools or [])
+
+        for destination_cell in receiver_cells:
+            if destination_cell == home_cell:
+                continue
+            for resource in model.resources:
+                sid = synthetic_for.get((resource.id, destination_cell))
+                if not sid:
+                    continue
+                if explicit_original and resource.id not in explicit_original:
+                    continue
+                if required and not required.issubset(set(resource.skills or [])):
+                    continue
+                if (
+                    not required
+                    and not explicit_original
+                    and original_activity.resource_pool
+                    and resource.id != original_activity.resource_pool
+                ):
+                    continue
+                if sid not in eligible:
+                    eligible.append(sid)
+
+        activity.eligible_resource_pools = eligible
+        if len(eligible) > 1 or required:
+            activity.routing_policy = "earliest_available_skill"
+
+    policy_metadata = {
+        "activity_home_cell": dict(activity_to_cell),
+        "resource_cell": resource_cell,
+        "allowed_receive_cells": sorted(receiver_cells),
+    }
+    return cloned, validation, policy_metadata
+
+
+def run_phase2_paired_comparison(
+    model: ProcessModel,
+    architecture_id: str,
+    *,
+    cases: int = 1200,
+    seed: int = 900,
+    replications: int = 12,
+    local_wait_threshold_minutes: float = 30.0,
+    max_overflow_fraction: float = 1.0,
+) -> dict[str, Any]:
+    no_overflow_model, validation = build_cellular_no_overflow_model(model, architecture_id)
+    overflow_model, _, policy_metadata = build_cellular_controlled_overflow_model(model, architecture_id)
+
+    if not policy_metadata["allowed_receive_cells"]:
+        raise ValueError(
+            "Controlled overflow requires at least one cell marked 'May receive overflow'."
+        )
+
+    replications = max(1, int(replications))
+    cases = max(100, int(cases))
+    threshold = max(0.0, float(local_wait_threshold_minutes))
+    max_fraction = min(1.0, max(0.0, float(max_overflow_fraction)))
+    seeds = [int(seed) + i for i in range(replications)]
+
+    rows = {
+        "global": [],
+        "cellular_no_overflow": [],
+        "cellular_controlled_overflow": [],
+    }
+    overflow_rows = []
+
+    for s in seeds:
+        global_out = simulate(model, architecture_id, {}, cases=cases, seed=s, emit_log=False)
+        no_out = simulate(no_overflow_model, architecture_id, {}, cases=cases, seed=s, emit_log=False)
+        controlled_out = simulate(
+            overflow_model,
+            architecture_id,
+            {},
+            cases=cases,
+            seed=s,
+            emit_log=False,
+            overflow_policy={
+                "enabled": True,
+                "local_wait_threshold_minutes": threshold,
+                "max_overflow_fraction": max_fraction,
+                **policy_metadata,
+            },
+        )
+        for label, out in (
+            ("global", global_out),
+            ("cellular_no_overflow", no_out),
+            ("cellular_controlled_overflow", controlled_out),
+        ):
+            rows[label].append({m: float(out["metrics"][m]) for m in PHASE1_METRICS})
+        overflow_rows.append(dict(controlled_out.get("overflow") or {}))
+
+    means = {k: _mean_metrics(v) for k, v in rows.items()}
+    controlled_minus_no = {
+        m: float(np.mean([c[m] - n[m] for c, n in zip(rows["cellular_controlled_overflow"], rows["cellular_no_overflow"])]))
+        for m in PHASE1_METRICS
+    }
+    controlled_minus_global = {
+        m: float(np.mean([c[m] - g[m] for c, g in zip(rows["cellular_controlled_overflow"], rows["global"])]))
+        for m in PHASE1_METRICS
+    }
+
+    return {
+        "architecture_id": architecture_id,
+        "cases_per_replication": cases,
+        "replications": replications,
+        "seeds": seeds,
+        "validation": validation,
+        "overflow_policy": {
+            "local_wait_threshold_minutes": threshold,
+            "max_overflow_fraction": max_fraction,
+            "allowed_receive_cells": policy_metadata["allowed_receive_cells"],
+        },
+        "global": {"metrics": means["global"]},
+        "cellular_no_overflow": {"metrics": means["cellular_no_overflow"]},
+        "cellular_controlled_overflow": {"metrics": means["cellular_controlled_overflow"]},
+        "paired_delta_controlled_minus_no_overflow": {"mean": controlled_minus_no},
+        "paired_delta_controlled_minus_global": {"mean": controlled_minus_global},
+        "overflow": {
+            "mean_fraction": float(np.mean([float(x.get("overflow_fraction", 0.0)) for x in overflow_rows])),
+            "mean_count": float(np.mean([float(x.get("overflow_count", 0.0)) for x in overflow_rows])),
+            "mean_wait_saved_minutes": float(np.mean([float(x.get("mean_wait_saved_minutes", 0.0)) for x in overflow_rows])),
+            "by_destination_cell_mean": {
+                cid: float(np.mean([float((x.get("by_destination_cell") or {}).get(cid, 0)) for x in overflow_rows]))
+                for cid in policy_metadata["allowed_receive_cells"]
+            },
+        },
+    }
+

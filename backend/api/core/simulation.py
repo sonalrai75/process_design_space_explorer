@@ -395,7 +395,7 @@ def _integrated_staff_minutes(model: ProcessModel, pool: ResourcePool, designed_
     return total
 
 
-def simulate(model: ProcessModel, architecture_id: str, design: dict[str, float] | None = None, cases: int = 1500, seed: int = 7, emit_log: bool = True, warmup_fraction: float = 0.25) -> dict:
+def simulate(model: ProcessModel, architecture_id: str, design: dict[str, float] | None = None, cases: int = 1500, seed: int = 7, emit_log: bool = True, warmup_fraction: float = 0.25, overflow_policy: dict | None = None) -> dict:
     design = design or {}
     cfg, capacities = apply_design(model, architecture_id, design)
     rng = np.random.default_rng(seed)
@@ -424,6 +424,19 @@ def simulate(model: ProcessModel, architecture_id: str, design: dict[str, float]
     activity_count = defaultdict(int)
     resource_service_intervals = []
     agent_service_intervals = []
+
+    overflow_policy = overflow_policy or {}
+    overflow_enabled = bool(overflow_policy.get('enabled'))
+    overflow_threshold = max(0.0, float(overflow_policy.get('local_wait_threshold_minutes', 0.0)))
+    max_overflow_fraction = min(1.0, max(0.0, float(overflow_policy.get('max_overflow_fraction', 1.0))))
+    activity_home_cell = dict(overflow_policy.get('activity_home_cell') or {})
+    resource_cell = dict(overflow_policy.get('resource_cell') or {})
+    allowed_receive_cells = set(overflow_policy.get('allowed_receive_cells') or [])
+    overflow_count = 0
+    resource_assignment_count = 0
+    overflow_by_destination = defaultdict(int)
+    overflow_by_source = defaultdict(int)
+    overflow_wait_saved = []
 
     now_arrival = 0.0
     base_dt = datetime(2026, 1, 5, 0, 0, tzinfo=timezone.utc)
@@ -474,18 +487,55 @@ def simulate(model: ProcessModel, architecture_id: str, design: dict[str, float]
                     resource = selected_agent['pool']
             else:
                 eligible = _eligible_resource_ids(model, act, capacities)
+                overflow_used = False
+                overflow_source_cell = None
+                overflow_destination_cell = None
                 if eligible:
-                    best = (float('inf'), None, None)
+                    candidates = []
                     for rid in eligible:
                         if rid not in server_free or rid not in rmap:
                             continue
                         candidate, idx = _pool_service_start(model, rmap[rid], server_free, rid, t, int(capacities[rid]))
                         tie = 0 if rid == act.resource_pool else 1
-                        if (candidate, tie) < (best[0], 0 if best[1] == act.resource_pool else 1):
-                            best = (candidate, rid, idx)
-                    if best[1] is None or not np.isfinite(best[0]):
+                        candidates.append((candidate, tie, rid, idx))
+
+                    best = min(candidates, default=(float('inf'), 1, None, None))
+                    home_cell = activity_home_cell.get(act.id) if overflow_enabled else None
+                    if home_cell and candidates:
+                        local = [x for x in candidates if resource_cell.get(x[2]) == home_cell]
+                        remote = [
+                            x for x in candidates
+                            if resource_cell.get(x[2]) not in (None, home_cell)
+                            and (not allowed_receive_cells or resource_cell.get(x[2]) in allowed_receive_cells)
+                        ]
+                        best_local = min(local, default=None)
+                        best_remote = min(remote, default=None)
+                        if best_local is not None:
+                            best = best_local
+                            local_wait = max(0.0, float(best_local[0] - t))
+                            can_overflow = (
+                                best_remote is not None
+                                and local_wait > overflow_threshold
+                                and best_remote[0] < best_local[0]
+                            )
+                            if can_overflow and max_overflow_fraction < 1.0:
+                                projected = (overflow_count + 1) / max(resource_assignment_count + 1, 1)
+                                can_overflow = projected <= max_overflow_fraction + 1e-12
+                            if can_overflow:
+                                best = best_remote
+                                overflow_used = True
+                                overflow_source_cell = home_cell
+                                overflow_destination_cell = resource_cell.get(best_remote[2])
+                                overflow_wait_saved.append(max(0.0, float(best_local[0] - best_remote[0])))
+
+                    if best[2] is None or not np.isfinite(best[0]):
                         raise RuntimeError(f'No staffed eligible resource is available for activity {act.id}.')
-                    start, resource, server_idx = best
+                    start, _, resource, server_idx = best
+                    resource_assignment_count += 1
+                    if overflow_used:
+                        overflow_count += 1
+                        overflow_by_source[str(overflow_source_cell)] += 1
+                        overflow_by_destination[str(overflow_destination_cell)] += 1
 
             svc = _activity_service_minutes(rng, model, current, cfg['service_multiplier'])
             if selected_agent is not None:
@@ -511,6 +561,9 @@ def simulate(model: ProcessModel, architecture_id: str, design: dict[str, float]
                     'end_time': (base_dt + timedelta(minutes=float(end))).isoformat(),
                     'resource': selected_agent['id'] if selected_agent is not None else (resource or ''),
                     'resource_pool': selected_agent['pool'] if selected_agent is not None else (resource or ''),
+                    'overflow': bool((not use_individual_agents) and locals().get('overflow_used', False)),
+                    'home_cell': locals().get('overflow_source_cell'),
+                    'served_cell': locals().get('overflow_destination_cell'),
                 })
 
             t = end
@@ -651,6 +704,15 @@ def simulate(model: ProcessModel, architecture_id: str, design: dict[str, float]
             for aid in activity_count
         ],
         'bottleneck_resource': bottleneck,
+        'overflow': {
+            'enabled': overflow_enabled,
+            'assignments': int(resource_assignment_count),
+            'overflow_count': int(overflow_count),
+            'overflow_fraction': float(overflow_count / max(resource_assignment_count, 1)),
+            'mean_wait_saved_minutes': float(np.mean(overflow_wait_saved)) if overflow_wait_saved else 0.0,
+            'by_source_cell': {str(k): int(v) for k, v in overflow_by_source.items()},
+            'by_destination_cell': {str(k): int(v) for k, v in overflow_by_destination.items()},
+        },
     }
 
     if emit_log:

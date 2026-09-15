@@ -11,7 +11,7 @@ from .core.demo import DEMO_MODEL
 from .core.model import ProcessModel
 from .core.mining import mine_log, compare_mined_logs
 from .core.simulation import simulate
-from .core.cellularization import run_phase1_paired_comparison
+from .core.cellularization import run_phase1_paired_comparison, run_phase2_paired_comparison
 from .core.calibration import preview_event_log, calibrate_event_log
 from .core.contact_center_excel import (
     preview_contact_center_workbook,
@@ -101,6 +101,16 @@ class CellularizationPhase1Request(BaseModel):
     cases: int = 1200
     seed: int = 700
     replications: int = 12
+
+
+class CellularizationPhase2Request(BaseModel):
+    model: ProcessModel = DEMO_MODEL
+    architecture_id: str | None = None
+    cases: int = 1200
+    seed: int = 900
+    replications: int = 12
+    local_wait_threshold_minutes: float = 30.0
+    max_overflow_fraction: float = 1.0
 
 
 class CompareRequest(BaseModel):
@@ -380,6 +390,23 @@ def cellularization_phase1_endpoint(req: CellularizationPhase1Request):
             cases=req.cases,
             seed=req.seed,
             replications=req.replications,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/experiments/cellularization/phase2")
+def cellularization_phase2_endpoint(req: CellularizationPhase2Request):
+    try:
+        architecture_id = req.architecture_id or req.model.architectures[0].id
+        return run_phase2_paired_comparison(
+            req.model,
+            architecture_id,
+            cases=req.cases,
+            seed=req.seed,
+            replications=req.replications,
+            local_wait_threshold_minutes=req.local_wait_threshold_minutes,
+            max_overflow_fraction=req.max_overflow_fraction,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
