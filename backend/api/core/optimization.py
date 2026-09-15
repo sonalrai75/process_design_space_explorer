@@ -213,7 +213,7 @@ def calculate_structural_capacity(
         status = "OVERLOADED"
 
     return {
-        "max_resource_utilization": max_util,
+        "max_resource_utilization": float(max(max_util_values)) if max_util_values else 0.0,
         "bottleneck_resource": bottleneck,
         "resource_utilizations": {
             str(k): float(v)
