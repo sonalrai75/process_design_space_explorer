@@ -121,11 +121,21 @@ export default function CellularizationPage() {
   }
 
   function setCellCapacity(cellId,resourceId,value) {
-    const n = Math.max(0,Math.floor(Number(value) || 0));
-    setCells(prev => prev.map(c => c.id === cellId ? {
-      ...c,
-      resource_capacities:{...(c.resource_capacities || {}),[resourceId]:n}
-    } : c));
+    const baseline = Number((model?.resources || []).find(r => r.id === resourceId)?.capacity || 0);
+    const requested = Math.max(0,Math.floor(Number(value) || 0));
+
+    setCells(prev => {
+      const allocatedElsewhere = prev
+        .filter(c => c.id !== cellId)
+        .reduce((sum,c) => sum + Math.max(0,Number(c.resource_capacities?.[resourceId]) || 0),0);
+      const availableForThisCell = Math.max(0,baseline - allocatedElsewhere);
+      const n = Math.min(requested,availableForThisCell);
+
+      return prev.map(c => c.id === cellId ? {
+        ...c,
+        resource_capacities:{...(c.resource_capacities || {}),[resourceId]:n}
+      } : c);
+    });
     setCellStatus("");
   }
 
@@ -215,16 +225,19 @@ export default function CellularizationPage() {
 
                 <div>
                   <div style={{fontWeight:800,fontSize:13}}>Resource capacity assigned</div>
-                  <div style={{fontSize:11,color:"#64748b",margin:"4px 0 8px"}}>Split each baseline resource-pool capacity across cells. Phase 1 comparison will require total cell capacity to equal the global baseline.</div>
+                  <div style={{fontSize:11,color:"#64748b",margin:"4px 0 8px"}}>Resource capacity is exclusive in Phase 1. Capacity assigned to one cell is immediately removed from what other cells can claim. Total cell capacity must equal the global baseline before comparison.</div>
                   <div style={{display:"grid",gap:7}}>
                     {(model.resources || []).map(r => {
                       const used = capacityUse[r.id] || 0;
                       const cap = Number(r.capacity || 0);
-                      const over = used > cap;
-                      return <div key={r.id} style={{display:"grid",gridTemplateColumns:"1fr 85px 110px",gap:8,alignItems:"center",fontSize:12,padding:"6px 8px",border:"1px solid #e2e8f0",borderRadius:8,background:"#fff"}}>
+                      const current = Math.max(0,Number(cell.resource_capacities?.[r.id]) || 0);
+                      const usedElsewhere = Math.max(0,used - current);
+                      const maxForThisCell = Math.max(0,cap - usedElsewhere);
+                      const remaining = Math.max(0,cap - used);
+                      return <div key={r.id} style={{display:"grid",gridTemplateColumns:"1fr 85px 150px",gap:8,alignItems:"center",fontSize:12,padding:"6px 8px",border:"1px solid #e2e8f0",borderRadius:8,background:"#fff"}}>
                         <span>{r.name || r.id}</span>
-                        <input type="number" min="0" max={cap} step="1" value={cell.resource_capacities?.[r.id] ?? 0} onChange={e => setCellCapacity(cell.id,r.id,e.target.value)} style={{width:"100%",padding:"5px 6px",border:"1px solid #cbd5e1",borderRadius:6}} />
-                        <span style={{textAlign:"right",color:over?"#b91c1c":"#64748b",fontWeight:over?800:600}}>{used} / {cap} allocated</span>
+                        <input type="number" min="0" max={maxForThisCell} step="1" value={current} onChange={e => setCellCapacity(cell.id,r.id,e.target.value)} style={{width:"100%",padding:"5px 6px",border:"1px solid #cbd5e1",borderRadius:6}} />
+                        <span style={{textAlign:"right",color:"#64748b",fontWeight:600}}>{used} / {cap} allocated · {remaining} free</span>
                       </div>;
                     })}
                   </div>
