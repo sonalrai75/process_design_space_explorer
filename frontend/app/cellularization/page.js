@@ -27,6 +27,12 @@ export default function CellularizationPage() {
   const [phase2Busy,setPhase2Busy] = useState(false);
   const [overflowWaitThreshold,setOverflowWaitThreshold] = useState(30);
   const [maxOverflowPercent,setMaxOverflowPercent] = useState(100);
+  const [phase3Experiment,setPhase3Experiment] = useState(null);
+  const [phase3Status,setPhase3Status] = useState("");
+  const [phase3Busy,setPhase3Busy] = useState(false);
+  const [sensitivityResults,setSensitivityResults] = useState(null);
+  const [sensitivityStatus,setSensitivityStatus] = useState("");
+  const [sensitivityBusy,setSensitivityBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -191,6 +197,85 @@ export default function CellularizationPage() {
       setPhase2Status(`Experiment error: ${e.message || e}`);
     } finally {
       setPhase2Busy(false);
+    }
+  }
+
+  async function runOverflowSensitivity() {
+    if (!model || !phase2Ready || !activeArchitecture) return;
+    const thresholds = [0,15,30,60,120,1000000000];
+    setSensitivityResults(null);
+    setSensitivityBusy(true);
+    setSensitivityStatus("Running overflow-threshold sensitivity...");
+    try {
+      const experimentModel = {...model,cells};
+      const rows = [];
+      for (let i=0;i<thresholds.length;i++) {
+        const threshold = thresholds[i];
+        const label = threshold >= 1000000000 ? "No overflow" : `${threshold} min`;
+        setSensitivityStatus(`Running threshold ${label} (${i+1}/${thresholds.length})...`);
+        const r = await fetch(`${API}/api/experiments/cellularization/phase2`, {
+          method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({
+            model:experimentModel,
+            architecture_id:activeArchitecture.id,
+            cases:900,
+            seed:1300,
+            replications:8,
+            local_wait_threshold_minutes:threshold,
+            max_overflow_fraction:Math.min(1,Math.max(0,(Number(maxOverflowPercent) || 0)/100))
+          })
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.detail || `Sensitivity run failed at ${label}`);
+        rows.push({
+          threshold_minutes:threshold,
+          label,
+          metrics:data.cellular_controlled_overflow?.metrics || {},
+          overflow:data.overflow || {},
+          replications:data.replications,
+          cases_per_replication:data.cases_per_replication
+        });
+      }
+      setSensitivityResults(rows);
+      setSensitivityStatus(`Completed ${rows.length} thresholds using common seeds.`);
+      setTimeout(() => document.getElementById("sensitivity-results")?.scrollIntoView({behavior:"smooth",block:"start"}),50);
+    } catch (e) {
+      setSensitivityStatus(`Experiment error: ${e.message || e}`);
+    } finally {
+      setSensitivityBusy(false);
+    }
+  }
+
+  async function runPhase3Experiment() {
+    if (!model || !phase2Ready || !activeArchitecture) return;
+    setPhase3Experiment(null);
+    setPhase3Busy(true);
+    setPhase3Status("Running 3 × 2 operating-structure / scheduling matrix...");
+    try {
+      const experimentModel = {...model,cells};
+      const r = await fetch(`${API}/api/experiments/cellularization/phase3`, {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          model:experimentModel,
+          architecture_id:activeArchitecture.id,
+          cases:800,
+          seed:1100,
+          replications:8,
+          local_wait_threshold_minutes:Math.max(0,Number(overflowWaitThreshold) || 0),
+          max_overflow_fraction:Math.min(1,Math.max(0,(Number(maxOverflowPercent) || 0)/100))
+        })
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "Scheduling matrix experiment failed");
+      setPhase3Experiment(data);
+      setPhase3Status(`Completed ${data.replications || 0} paired replications across six scenarios.`);
+      setTimeout(() => document.getElementById("phase3-results")?.scrollIntoView({behavior:"smooth",block:"start"}),50);
+    } catch (e) {
+      setPhase3Status(`Experiment error: ${e.message || e}`);
+    } finally {
+      setPhase3Busy(false);
     }
   }
 
@@ -400,6 +485,48 @@ export default function CellularizationPage() {
           {phase2Status && <div style={{marginTop:12,fontSize:12,fontWeight:700,color:phase2Status.startsWith("Experiment error")?"#b91c1c":"#475569"}}>{phase2Status}</div>}
         </section>
 
+        <section style={{...card,marginTop:18,background:"#f8fafc"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+            <div>
+              <h2 style={{margin:"0 0 5px"}}>Phase 3 experiment — Scheduling Policy Matrix</h2>
+              <div style={muted}>Compares FCFS with SLA-risk dispatching across Global, Cellular / No Overflow, and Cellular / Controlled Overflow. All six scenarios use the same generated case arrivals, routes, and sampled service times within each replication.</div>
+            </div>
+            <button
+              onClick={runPhase3Experiment}
+              disabled={!phase2Ready || phase3Busy}
+              style={{padding:"10px 14px",borderRadius:8,border:"1px solid #7c3aed",background:phase2Ready && !phase3Busy?"#7c3aed":"#cbd5e1",color:"#fff",fontWeight:800,cursor:phase2Ready && !phase3Busy?"pointer":"default"}}
+            >
+              {phase3Busy ? "Running scheduling matrix..." : "Run Scheduling Matrix"}
+            </button>
+          </div>
+          <div style={{marginTop:12,padding:"10px 12px",border:"1px solid #ddd6fe",background:"#f5f3ff",borderRadius:8,fontSize:12,color:"#5b21b6",lineHeight:1.55}}>
+            <b>SLA-risk</b> dispatches the waiting job with the smallest projected slack: SLA due time minus current time minus remaining sampled processing time. Pure EDD is not shown separately because the current model uses the same SLA offset for all cases, so EDD largely collapses to arrival order.
+          </div>
+          {!phase2Ready && <div style={{marginTop:12,padding:"10px 12px",border:"1px solid #fed7aa",background:"#fff7ed",borderRadius:8,fontSize:12,color:"#9a3412"}}>Phase 3 requires the same valid cell design and overflow-receiver configuration as Phase 2.</div>}
+          {phase3Status && <div style={{marginTop:12,fontSize:12,fontWeight:700,color:phase3Status.startsWith("Experiment error")?"#b91c1c":"#475569"}}>{phase3Status}</div>}
+        </section>
+
+        <section style={{...card,marginTop:18,background:"#f8fafc"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+            <div>
+              <h2 style={{margin:"0 0 5px"}}>Overflow-threshold sensitivity</h2>
+              <div style={muted}>Runs controlled overflow at 0, 15, 30, 60, 120 minutes and an effectively infinite threshold. Every threshold uses the same cases and random seeds, so differences isolate the overflow trigger.</div>
+            </div>
+            <button
+              onClick={runOverflowSensitivity}
+              disabled={!phase2Ready || sensitivityBusy}
+              style={{padding:"10px 14px",borderRadius:8,border:"1px solid #0369a1",background:phase2Ready && !sensitivityBusy?"#0369a1":"#cbd5e1",color:"#fff",fontWeight:800,cursor:phase2Ready && !sensitivityBusy?"pointer":"default"}}
+            >
+              {sensitivityBusy ? "Running sensitivity..." : "Run Overflow Threshold Sensitivity"}
+            </button>
+          </div>
+          <div style={{marginTop:12,padding:"10px 12px",border:"1px solid #bae6fd",background:"#f0f9ff",borderRadius:8,fontSize:12,color:"#075985",lineHeight:1.55}}>
+            The final row behaves as <b>no overflow</b>. The main decision signal is whether a threshold preserves most of the cycle-time/WIP benefit while keeping maximum resource utilization at or below about 95%.
+          </div>
+          {!phase2Ready && <div style={{marginTop:12,padding:"10px 12px",border:"1px solid #fed7aa",background:"#fff7ed",borderRadius:8,fontSize:12,color:"#9a3412"}}>Sensitivity requires the same valid cell design and overflow-receiver configuration as Phase 2.</div>}
+          {sensitivityStatus && <div style={{marginTop:12,fontSize:12,fontWeight:700,color:sensitivityStatus.startsWith("Experiment error")?"#b91c1c":"#475569"}}>{sensitivityStatus}</div>}
+        </section>
+
         {experiment && <section id="phase1-results" style={{...card,marginTop:18}}>
           <h2 style={{marginTop:0}}>Phase 1 paired results</h2>
           <div style={{fontSize:12,color:"#64748b",marginBottom:12}}>
@@ -419,6 +546,29 @@ export default function CellularizationPage() {
             <Summary label="Mean overflow count" value={fmtNum(phase2Experiment.overflow?.mean_count,2)} />
             <Summary label="Mean wait saved / overflow" value={`${fmtNum(phase2Experiment.overflow?.mean_wait_saved_minutes,2)} min`} />
           </div>
+        </section>}
+
+        {phase3Experiment && <section id="phase3-results" style={{...card,marginTop:18}}>
+          <h2 style={{marginTop:0}}>Phase 3 scheduling-policy matrix</h2>
+          <div style={{fontSize:12,color:"#64748b",marginBottom:12,lineHeight:1.55}}>
+            {phase3Experiment.replications} replications · {phase3Experiment.cases_per_replication} cases per replication · common arrivals, routes, and sampled service times across all six scenarios.
+          </div>
+          <SchedulingMatrixTable experiment={phase3Experiment} />
+          <div style={{marginTop:14,padding:"10px 12px",border:"1px solid #e2e8f0",borderRadius:10,background:"#f8fafc",fontSize:12,color:"#475569",lineHeight:1.55}}>
+            {phase3Experiment.note}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))",gap:10,marginTop:14}}>
+            <Summary label="Overflow share · FCFS" value={fmtPct(phase3Experiment.overflow?.fcfs_mean_fraction)} />
+            <Summary label="Overflow share · SLA-risk" value={fmtPct(phase3Experiment.overflow?.sla_risk_mean_fraction)} />
+          </div>
+        </section>}
+
+        {sensitivityResults && <section id="sensitivity-results" style={{...card,marginTop:18}}>
+          <h2 style={{marginTop:0}}>Overflow-threshold sensitivity results</h2>
+          <div style={{fontSize:12,color:"#64748b",marginBottom:12,lineHeight:1.55}}>
+            {sensitivityResults[0]?.replications || 0} replications · {sensitivityResults[0]?.cases_per_replication || 0} cases per replication · identical seeds across thresholds · maximum overflow share {fmtNum(Number(maxOverflowPercent),2)}%.
+          </div>
+          <OverflowSensitivityTable rows={sensitivityResults} />
         </section>}
       </>}
     </main>
@@ -523,6 +673,83 @@ function Phase2ComparisonTable({experiment}) {
         <td align="right" style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9"}}>{show(c[key],type)}</td>
         <td align="right" style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9",fontWeight:700}}>{showDelta(d[key],type)}</td>
       </tr>)}</tbody>
+    </table>
+  </div>;
+}
+
+function OverflowSensitivityTable({rows}) {
+  const valid = Array.isArray(rows) ? rows : [];
+  const under95 = valid.filter(r => Number(r.metrics?.max_resource_utilization) <= 0.95);
+  const preferred = (under95.length ? under95 : valid).reduce((best,r) => {
+    if (!best) return r;
+    return Number(r.metrics?.mean_cycle_minutes) < Number(best.metrics?.mean_cycle_minutes) ? r : best;
+  },null);
+  const metrics = [
+    ["Throughput / hr","throughput_per_hour","num"],
+    ["Mean cycle (min)","mean_cycle_minutes","num"],
+    ["P95 cycle (min)","p95_cycle_minutes","num"],
+    ["Average WIP","avg_wip","num"],
+    ["Backlog growth / hr","backlog_growth_per_hour","num"],
+    ["Max utilization","max_resource_utilization","pct"],
+    ["Overflow share","overflow_fraction","pct"]
+  ];
+  const val=(r,key)=>key==="overflow_fraction" ? r.overflow?.mean_fraction : r.metrics?.[key];
+  const show=(v,type)=>type==="pct"?fmtPct(v):fmtNum(v,2);
+  return <div>
+    {preferred && <div style={{marginBottom:12,padding:"10px 12px",border:"1px solid #bbf7d0",background:"#f0fdf4",borderRadius:10,fontSize:12,color:"#166534",lineHeight:1.55}}>
+      <b>Best threshold under the 95% utilization screen:</b> {preferred.label}. {under95.length ? "Selected by lowest mean cycle time among thresholds at or below 95% max utilization." : "No tested threshold stayed at or below 95%; showing the lowest mean-cycle threshold overall."}
+    </div>}
+    <div style={{overflowX:"auto"}}>
+      <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:900}}>
+        <thead><tr>
+          <th align="left" style={{padding:"8px 6px",borderBottom:"1px solid #e2e8f0"}}>Threshold</th>
+          {metrics.map(([label,key]) => <th key={key} align="right" style={{padding:"8px 6px",borderBottom:"1px solid #e2e8f0",whiteSpace:"nowrap"}}>{label}</th>)}
+        </tr></thead>
+        <tbody>{valid.map(r => {
+          const isPreferred = preferred && r.threshold_minutes === preferred.threshold_minutes;
+          return <tr key={r.threshold_minutes} style={{background:isPreferred?"#f0fdf4":"transparent"}}>
+            <td style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9",fontWeight:800}}>{r.label}{isPreferred?" · preferred":""}</td>
+            {metrics.map(([_,key,type]) => <td key={key} align="right" style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9",fontWeight:key==="max_resource_utilization" && Number(val(r,key))>0.95?800:400,color:key==="max_resource_utilization" && Number(val(r,key))>0.95?"#b91c1c":"inherit"}}>{show(val(r,key),type)}</td>)}
+          </tr>;
+        })}</tbody>
+      </table>
+    </div>
+  </div>;
+}
+
+function SchedulingMatrixTable({experiment}) {
+  const m = experiment?.matrix || {};
+  const scenarios = [
+    ["Global · FCFS","global_fcfs"],
+    ["Global · SLA-risk","global_sla_risk"],
+    ["Cellular no overflow · FCFS","cellular_no_overflow_fcfs"],
+    ["Cellular no overflow · SLA-risk","cellular_no_overflow_sla_risk"],
+    ["Controlled overflow · FCFS","cellular_controlled_overflow_fcfs"],
+    ["Controlled overflow · SLA-risk","cellular_controlled_overflow_sla_risk"]
+  ];
+  const rows = [
+    ["Mean cycle (min)","mean_cycle_minutes","num"],
+    ["Median cycle (min)","median_cycle_minutes","num"],
+    ["P95 cycle (min)","p95_cycle_minutes","num"],
+    ["Mean wait (min)","mean_wait_minutes","num"],
+    ["Throughput / hr","throughput_per_hour","num"],
+    ["SLA attainment","sla_attainment","pct"],
+    ["Average WIP","avg_wip","num"],
+    ["Max utilization","max_resource_utilization","pct"],
+    ["Backlog growth / hr","backlog_growth_per_hour","num"],
+    ["Annual cost","annual_cost","money"]
+  ];
+  const show=(v,type)=>type==="pct"?fmtPct(v):type==="money"?(Number.isFinite(Number(v))?`$${Number(v).toLocaleString(undefined,{maximumFractionDigits:0})}`:"—"):fmtNum(v,2);
+  return <div style={{overflowX:"auto"}}>
+    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:900}}>
+      <thead><tr>
+        <th align="left" style={{padding:"8px 6px",borderBottom:"1px solid #e2e8f0"}}>Scenario</th>
+        {rows.map(([label,key]) => <th key={key} align="right" style={{padding:"8px 6px",borderBottom:"1px solid #e2e8f0",whiteSpace:"nowrap"}}>{label}</th>)}
+      </tr></thead>
+      <tbody>{scenarios.map(([label,key]) => { const x=m?.[key]?.metrics || {}; return <tr key={key}>
+        <td style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9",fontWeight:800,whiteSpace:"nowrap"}}>{label}</td>
+        {rows.map(([_,metric,type]) => <td key={metric} align="right" style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9"}}>{show(x[metric],type)}</td>)}
+      </tr>; })}</tbody>
     </table>
   </div>;
 }
