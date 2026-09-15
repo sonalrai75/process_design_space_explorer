@@ -3362,6 +3362,27 @@ export default function Home() {
           >
             Compare selected TO-BE
           </button>
+
+          <button
+            disabled={busy || !model}
+            style={{
+              ...buttonStyle,
+              opacity:
+                busy || !model
+                ? 0.55
+                : 1
+            }}
+            onClick={() => {
+              if (!model) return;
+              localStorage.setItem(
+                "pds_cellularization_model",
+                JSON.stringify(model)
+              );
+              window.location.href = "/cellularization";
+            }}
+          >
+            Open Cellularization &amp; Scheduling
+          </button>
         </div>
 
         <div id="optimization-immediate">
