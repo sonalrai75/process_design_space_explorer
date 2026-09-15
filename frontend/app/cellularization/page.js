@@ -17,6 +17,8 @@ const muted = {color:"#64748b",lineHeight:1.5};
 export default function CellularizationPage() {
   const [model,setModel] = useState(null);
   const [status,setStatus] = useState("Loading current process model");
+  const [cells,setCells] = useState([]);
+  const [cellStatus,setCellStatus] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -49,6 +51,16 @@ export default function CellularizationPage() {
     return () => { cancelled = true; };
   }, []);
 
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("pds_cellularization_cells");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) setCells(parsed);
+      }
+    } catch (_) {}
+  }, []);
+
   const activeArchitecture = useMemo(() => {
     if (!model) return null;
     const archVar = (model.variables || []).find(v => v.name === "architecture");
@@ -61,6 +73,71 @@ export default function CellularizationPage() {
     const ids = new Set(activeArchitecture?.enabled_activities || (model.activities || []).map(a => a.id));
     return (model.activities || []).filter(a => ids.has(a.id));
   }, [model,activeArchitecture]);
+
+  const capacityUse = useMemo(() => {
+    const out = {};
+    for (const r of (model?.resources || [])) out[r.id] = 0;
+    for (const c of cells) {
+      for (const [rid,val] of Object.entries(c.resource_capacities || {})) {
+        out[rid] = (out[rid] || 0) + Math.max(0,Number(val) || 0);
+      }
+    }
+    return out;
+  }, [cells,model]);
+
+  const activityAssignments = useMemo(() => {
+    const out = {};
+    for (const c of cells) for (const aid of (c.activity_ids || [])) {
+      if (!out[aid]) out[aid] = [];
+      out[aid].push(c.id);
+    }
+    return out;
+  }, [cells]);
+
+  function addCell() {
+    const id = `cell_${Date.now()}`;
+    setCells(prev => [...prev,{id,name:`Cell ${prev.length+1}`,activity_ids:[],resource_capacities:{},preferred_work_types:[],cross_cell_eligible:false}]);
+    setCellStatus("");
+  }
+
+  function removeCell(id) {
+    setCells(prev => prev.filter(c => c.id !== id));
+    setCellStatus("");
+  }
+
+  function updateCell(id,patch) {
+    setCells(prev => prev.map(c => c.id === id ? {...c,...patch} : c));
+    setCellStatus("");
+  }
+
+  function toggleActivity(cellId,activityId) {
+    setCells(prev => prev.map(c => {
+      if (c.id !== cellId) return c;
+      const set = new Set(c.activity_ids || []);
+      if (set.has(activityId)) set.delete(activityId); else set.add(activityId);
+      return {...c,activity_ids:[...set]};
+    }));
+    setCellStatus("");
+  }
+
+  function setCellCapacity(cellId,resourceId,value) {
+    const n = Math.max(0,Math.floor(Number(value) || 0));
+    setCells(prev => prev.map(c => c.id === cellId ? {
+      ...c,
+      resource_capacities:{...(c.resource_capacities || {}),[resourceId]:n}
+    } : c));
+    setCellStatus("");
+  }
+
+  function saveCells() {
+    const over = (model?.resources || []).filter(r => (capacityUse[r.id] || 0) > Number(r.capacity || 0));
+    if (over.length) {
+      setCellStatus(`Cannot save: allocated capacity exceeds baseline for ${over.map(r => r.name || r.id).join(", ")}.`);
+      return;
+    }
+    localStorage.setItem("pds_cellularization_cells",JSON.stringify(cells));
+    setCellStatus(`Saved ${cells.length} cell definition${cells.length === 1 ? "" : "s"} locally.`);
+  }
 
   return (
     <main style={{maxWidth:1180,margin:"0 auto",padding:"28px 20px 60px",fontFamily:"Arial, Helvetica, sans-serif",color:"#0f172a"}}>
@@ -94,33 +171,74 @@ export default function CellularizationPage() {
         </section>
 
         <section style={{...card,marginTop:18}}>
-          <h2 style={{marginTop:0}}>Phase 1 — Manual cell design</h2>
-          <p style={muted}>
-            This page is now connected to the exact model from the main workspace. The next increment will add editable cell definitions that assign activities and resource capacity to cells, followed by paired Global versus Cellular / No Overflow experiments using the same demand, distributions, skills and random seeds.
-          </p>
-
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:12,marginTop:14}}>
-            <div style={{...card,boxShadow:"none",background:"#f8fafc"}}>
-              <div style={{fontWeight:800}}>Activities available for cell assignment</div>
-              <div style={{marginTop:10,display:"flex",gap:6,flexWrap:"wrap"}}>
-                {enabledActivities.map(a => (
-                  <span key={a.id} style={{fontSize:12,padding:"5px 8px",border:"1px solid #cbd5e1",borderRadius:999,background:"#fff"}}>{a.name || a.id}</span>
-                ))}
-              </div>
+          <div style={{display:"flex",justifyContent:"space-between",gap:12,alignItems:"center",flexWrap:"wrap"}}>
+            <div>
+              <h2 style={{margin:"0 0 5px"}}>Phase 1 — Manual cell design</h2>
+              <div style={muted}>Define cells without changing the underlying process architecture or service-time models.</div>
             </div>
-
-            <div style={{...card,boxShadow:"none",background:"#f8fafc"}}>
-              <div style={{fontWeight:800}}>Resources available for cell assignment</div>
-              <div style={{marginTop:10,display:"grid",gap:7}}>
-                {(model.resources || []).map(r => (
-                  <div key={r.id} style={{fontSize:12,display:"flex",justifyContent:"space-between",gap:10}}>
-                    <span>{r.name || r.id}</span>
-                    <b>capacity {r.capacity}</b>
-                  </div>
-                ))}
-              </div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              <button onClick={addCell} style={{padding:"9px 12px",borderRadius:8,border:"1px solid #cbd5e1",background:"#fff",fontWeight:800,cursor:"pointer"}}>Add cell</button>
+              <button onClick={saveCells} disabled={!cells.length} style={{padding:"9px 12px",borderRadius:8,border:"1px solid #4f46e5",background:cells.length?"#4f46e5":"#cbd5e1",color:"#fff",fontWeight:800,cursor:cells.length?"pointer":"default"}}>Save cell design</button>
             </div>
           </div>
+
+          {cellStatus && <div style={{marginTop:10,fontSize:12,color:cellStatus.startsWith("Cannot")?"#b91c1c":"#166534",fontWeight:700}}>{cellStatus}</div>}
+
+          {!cells.length && <div style={{marginTop:16,padding:16,border:"1px dashed #cbd5e1",borderRadius:12,color:"#64748b",fontSize:13}}>No cells defined yet. Click <b>Add cell</b> to begin.</div>}
+
+          {cells.map((cell,idx) => (
+            <div key={cell.id} style={{...card,boxShadow:"none",background:"#f8fafc",marginTop:14}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+                <div style={{display:"flex",alignItems:"center",gap:10,flex:1,minWidth:260}}>
+                  <div style={{fontSize:11,fontWeight:800,color:"#4f46e5"}}>CELL {idx+1}</div>
+                  <input value={cell.name || ""} onChange={e => updateCell(cell.id,{name:e.target.value})} style={{flex:1,minWidth:160,padding:"7px 9px",border:"1px solid #cbd5e1",borderRadius:7,fontWeight:700}} />
+                </div>
+                <button onClick={() => removeCell(cell.id)} style={{padding:"7px 10px",borderRadius:7,border:"1px solid #fecaca",background:"#fff",color:"#b91c1c",fontWeight:700,cursor:"pointer"}}>Remove</button>
+              </div>
+
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(310px,1fr))",gap:14,marginTop:14}}>
+                <div>
+                  <div style={{fontWeight:800,fontSize:13}}>Activities in this cell</div>
+                  <div style={{fontSize:11,color:"#64748b",margin:"4px 0 8px"}}>Activities may temporarily appear in more than one cell while designing. Ambiguities are shown below.</div>
+                  <div style={{display:"grid",gap:6,maxHeight:270,overflow:"auto",paddingRight:4}}>
+                    {enabledActivities.map(a => {
+                      const checked = (cell.activity_ids || []).includes(a.id);
+                      const count = (activityAssignments[a.id] || []).length;
+                      return <label key={a.id} style={{display:"flex",alignItems:"center",gap:8,fontSize:12,padding:"6px 8px",border:"1px solid #e2e8f0",borderRadius:8,background:"#fff"}}>
+                        <input type="checkbox" checked={checked} onChange={() => toggleActivity(cell.id,a.id)} />
+                        <span style={{flex:1}}>{a.name || a.id}</span>
+                        {count > 1 && <span style={{fontSize:10,color:"#b45309",fontWeight:800}}>MULTI-CELL</span>}
+                      </label>;
+                    })}
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{fontWeight:800,fontSize:13}}>Resource capacity assigned</div>
+                  <div style={{fontSize:11,color:"#64748b",margin:"4px 0 8px"}}>Split each baseline resource-pool capacity across cells. Phase 1 comparison will require total cell capacity to equal the global baseline.</div>
+                  <div style={{display:"grid",gap:7}}>
+                    {(model.resources || []).map(r => {
+                      const used = capacityUse[r.id] || 0;
+                      const cap = Number(r.capacity || 0);
+                      const over = used > cap;
+                      return <div key={r.id} style={{display:"grid",gridTemplateColumns:"1fr 85px 110px",gap:8,alignItems:"center",fontSize:12,padding:"6px 8px",border:"1px solid #e2e8f0",borderRadius:8,background:"#fff"}}>
+                        <span>{r.name || r.id}</span>
+                        <input type="number" min="0" max={cap} step="1" value={cell.resource_capacities?.[r.id] ?? 0} onChange={e => setCellCapacity(cell.id,r.id,e.target.value)} style={{width:"100%",padding:"5px 6px",border:"1px solid #cbd5e1",borderRadius:6}} />
+                        <span style={{textAlign:"right",color:over?"#b91c1c":"#64748b",fontWeight:over?800:600}}>{used} / {cap} allocated</span>
+                      </div>;
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+
+          {cells.length > 0 && <div style={{marginTop:14,padding:"12px 14px",border:"1px solid #e2e8f0",borderRadius:10,background:"#fff"}}>
+            <div style={{fontWeight:800,fontSize:13}}>Design validation</div>
+            <div style={{fontSize:12,color:"#64748b",marginTop:6,lineHeight:1.55}}>
+              Activities unassigned: <b>{enabledActivities.filter(a => !(activityAssignments[a.id] || []).length).length}</b> · Activities assigned to multiple cells: <b>{enabledActivities.filter(a => (activityAssignments[a.id] || []).length > 1).length}</b> · Resource pools with exact baseline allocation: <b>{(model.resources || []).filter(r => (capacityUse[r.id] || 0) === Number(r.capacity || 0)).length}/{(model.resources || []).length}</b>.
+            </div>
+          </div>}
         </section>
 
         <section style={{...card,marginTop:18,background:"#f8fafc"}}>
