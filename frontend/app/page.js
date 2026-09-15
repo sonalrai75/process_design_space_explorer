@@ -1166,6 +1166,22 @@ export default function Home() {
   const [selectedTransitionIndex,setSelectedTransitionIndex] = useState(null);
   const [skillMatrixOpen,setSkillMatrixOpen] = useState(false);
 
+  const unresolvedActivities = (model?.activities || []).filter(
+    a => a?.model_source === "unresolved" || a?.service_time?.distribution === "unresolved"
+  );
+
+  const liveActivityModels = (calibration?.activity_models || []).map(x => {
+    const activity = (model?.activities || []).find(a => a.id === x.activity_id);
+    return activity
+      ? {
+          ...x,
+          model_source:activity.model_source ?? x.model_source,
+          distribution:activity.service_time?.distribution ?? x.distribution,
+          confidence:activity.confidence ?? x.confidence
+        }
+      : x;
+  });
+
   useEffect(() => {
     if (!runningAction) {
       setElapsed(0);
@@ -1344,23 +1360,33 @@ export default function Home() {
     try {
       setOpt(null);
 
-      setOpt(
-        await call(
-          "/api/optimize",
-          {
-            method:"POST",
-            headers:{
-              "Content-Type":
-                "application/json"
-            },
-            body:JSON.stringify({
-              model:model || undefined,
-              robustness_target:0.90
-            })
+      const result = await call(
+        "/api/optimize",
+        {
+          method:"POST",
+          headers:{
+            "Content-Type":
+              "application/json"
           },
-          "Running robust optimization"
-        )
+          body:JSON.stringify({
+            model:model || undefined,
+            robustness_target:0.90
+          })
+        },
+        "Running robust optimization"
       );
+
+      setOpt(result);
+      setStatus(
+        `Optimization complete${result?.results?.length ? ` · ${result.results.length} architecture result${result.results.length === 1 ? "" : "s"}` : ""}`
+      );
+
+      setTimeout(() => {
+        document.getElementById("optimization-results")?.scrollIntoView({
+          behavior:"smooth",
+          block:"start"
+        });
+      }, 50);
 
     } catch(e) {
       setStatus(e.message);
@@ -3119,20 +3145,20 @@ export default function Home() {
               variables and is used directly by Simulation and Optimization.
             </div>
 
-            {Number(calibration.unresolved_activity_count || 0) > 0 &&
+            {unresolvedActivities.length > 0 &&
               <div style={{marginTop:12,padding:"10px 12px",background:"#fff7ed",border:"1px solid #fed7aa",borderRadius:8,fontSize:12,color:"#9a3412"}}>
-                <b>{calibration.unresolved_activity_count} activity{Number(calibration.unresolved_activity_count) === 1 ? "" : "ies"} have no usable duration observations.</b> Select each highlighted activity in the Visual Process Modeler and define it as terminal, triangular, manual-sample, borrowed, or fixed before simulation/optimization.
+                <b>{unresolvedActivities.length} activity{unresolvedActivities.length === 1 ? "" : "ies"} {unresolvedActivities.length === 1 ? "has" : "have"} no usable duration observations.</b> {unresolvedActivities.map(a => a.name || a.id).join(", ")}. Select each highlighted activity in the Visual Process Modeler and define it as terminal, triangular, manual-sample, borrowed, or fixed before simulation/optimization.
               </div>
             }
 
-            {Array.isArray(calibration.activity_models) && calibration.activity_models.length > 0 &&
+            {liveActivityModels.length > 0 &&
               <div style={{marginTop:18}}>
                 <div style={{fontWeight:800,marginBottom:8}}>Activity modeling provenance</div>
                 <div style={{overflowX:"auto"}}>
                   <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
                     <thead><tr><th align="left">Activity</th><th align="right">Duration observations</th><th align="left">Model source</th><th align="left">Simulation distribution</th><th align="left">Confidence</th></tr></thead>
                     <tbody>
-                      {calibration.activity_models.map(x =>
+                      {liveActivityModels.map(x =>
                         <tr key={x.activity_id} style={{background:x.model_source === "unresolved" ? "#fff7ed" : "transparent"}}>
                           <td style={{padding:"6px 4px"}}>{x.activity}</td>
                           <td align="right">{x.model_source === "terminal" ? "—" : x.service_observations}</td>
@@ -4060,9 +4086,10 @@ export default function Home() {
       }
 
       {opt &&
-        <section style={{
+        <section id="optimization-results" style={{
           ...card,
-          marginTop:18
+          marginTop:18,
+          scrollMarginTop:18
         }}>
           <h2 style={{
             marginTop:0
