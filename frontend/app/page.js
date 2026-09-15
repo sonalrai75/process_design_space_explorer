@@ -49,6 +49,12 @@ function fmtPct(v) {
   );
 }
 
+function fmtProbabilityInput(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "";
+  return String(Number(n.toFixed(3)));
+}
+
 function fmtFlow(v) {
   return (
     (100 * Math.min(Number(v), 1)).toFixed(1)
@@ -2820,126 +2826,7 @@ export default function Home() {
         <h2 style={{
           marginTop:0
         }}>
-          Demo workflow
-        </h2>
-
-        <div style={{
-          display:"flex",
-          gap:10,
-          flexWrap:"wrap"
-        }}>
-          <button
-            disabled={busy}
-            style={{
-              ...buttonStyle,
-              opacity:
-                busy ? 0.55 : 1
-            }}
-            onClick={loadModel}
-          >
-            Load demo model
-          </button>
-
-          <button
-            disabled={busy}
-            style={{
-              ...buttonStyle,
-              opacity:
-                busy ? 0.55 : 1
-            }}
-            onClick={
-              runSimulation
-            }
-          >
-            Run baseline simulation
-          </button>
-
-          <button
-            disabled={busy}
-            style={{
-              ...buttonStyle,
-              opacity:
-                busy ? 0.55 : 1
-            }}
-            onClick={runOptimize}
-          >
-            {runningAction
-              === "Running robust optimization"
-              ? "Optimization running..."
-              : "Optimize architecture families"}
-          </button>
-
-          <button
-            disabled={busy || !model || !opt?.results?.[0]?.best}
-            style={{
-              ...buttonStyle,
-              opacity:
-                busy || !model || !opt?.results?.[0]?.best
-                ? 0.55
-                : 1
-            }}
-            onClick={runCompare}
-          >
-            Compare selected TO-BE
-          </button>
-        </div>
-      </section>
-      }
-
-      {model &&
-        <section style={{
-          ...card,
-          marginTop:18
-        }}>
-          <h2 style={{
-            marginTop:0
-          }}>
-            {model.name}
-          </h2>
-
-          <div style={{
-            display:"flex",
-            gap:8,
-            flexWrap:"wrap"
-          }}>
-            {(model.activities || []).map(
-              a =>
-              <div
-                key={a.id}
-                style={{
-                  padding:"10px 14px",
-                  border:
-                    "1px solid #d1d5db",
-                  borderRadius:10
-                }}
-              >
-                <b>{a.name}</b>
-
-                <div style={{
-                  fontSize:12,
-                  color:"#6b7280"
-                }}>
-                  {
-                    a.service_time
-                    .mean_minutes
-                  } min
-                </div>
-              </div>
-            )}
-          </div>
-        </section>
-      }
-
-
-      {workflowClass === "general" &&
-      <section style={{
-        ...card,
-        marginTop:18
-      }}>
-        <h2 style={{
-          marginTop:0
-        }}>
-          Event-log calibration
+          General Process data
         </h2>
 
         <p style={{
@@ -2958,6 +2845,17 @@ export default function Home() {
           flexWrap:"wrap",
           marginBottom:14
         }}>
+          <button
+            disabled={busy}
+            style={{
+              ...buttonStyle,
+              opacity:busy ? 0.55 : 1
+            }}
+            onClick={loadModel}
+          >
+            Load demo model
+          </button>
+
           <button
             disabled={busy}
             style={{
@@ -3277,6 +3175,118 @@ export default function Home() {
       </section>
       }
 
+
+      {model &&
+        <section style={{
+          ...card,
+          marginTop:18
+        }}>
+          <h2 style={{
+            marginTop:0
+          }}>
+            {model.name}
+          </h2>
+
+          <div style={{
+            display:"flex",
+            gap:8,
+            flexWrap:"wrap"
+          }}>
+            {(model.activities || []).map(
+              a =>
+              <div
+                key={a.id}
+                style={{
+                  padding:"10px 14px",
+                  border:
+                    "1px solid #d1d5db",
+                  borderRadius:10
+                }}
+              >
+                <b>{a.name}</b>
+
+                <div style={{
+                  fontSize:12,
+                  color:"#6b7280"
+                }}>
+                  {
+                    a.service_time
+                    .mean_minutes
+                  } min
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+      }
+
+
+      {workflowClass === "general" &&
+      <section style={{
+        ...card,
+        marginTop:18
+      }}>
+        <h2 style={{
+          marginTop:0
+        }}>
+          Baseline & analysis
+        </h2>
+
+        <p style={{color:"#4b5563",lineHeight:1.5,marginTop:0}}>
+          Run simulation and optimization only after the process model has been loaded or calibrated above.
+        </p>
+
+        <div style={{
+          display:"flex",
+          gap:10,
+          flexWrap:"wrap"
+        }}>
+
+          <button
+            disabled={busy}
+            style={{
+              ...buttonStyle,
+              opacity:
+                busy ? 0.55 : 1
+            }}
+            onClick={
+              runSimulation
+            }
+          >
+            Run baseline simulation
+          </button>
+
+          <button
+            disabled={busy}
+            style={{
+              ...buttonStyle,
+              opacity:
+                busy ? 0.55 : 1
+            }}
+            onClick={runOptimize}
+          >
+            {runningAction
+              === "Running robust optimization"
+              ? "Optimization running..."
+              : "Optimize architecture families"}
+          </button>
+
+          <button
+            disabled={busy || !model || !opt?.results?.[0]?.best}
+            style={{
+              ...buttonStyle,
+              opacity:
+                busy || !model || !opt?.results?.[0]?.best
+                ? 0.55
+                : 1
+            }}
+            onClick={runCompare}
+          >
+            Compare selected TO-BE
+          </button>
+        </div>
+      </section>
+      }
       {model &&
         <section style={{
           ...card,
@@ -3569,7 +3579,7 @@ export default function Home() {
                         </select>
                       </label>
                       <label style={{fontSize:12}}>Routing probability
-                        <input type="number" min="0" max="1" step="0.01" value={t.probability} onChange={e => updateTransition(selectedTransitionIndex,"probability",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}/>
+                        <input type="number" min="0" max="1" step="0.001" value={fmtProbabilityInput(t.probability)} onChange={e => updateTransition(selectedTransitionIndex,"probability",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}/>
                       </label>
                     </div>
                     <button style={{...buttonStyle,marginTop:10}} onClick={() => {removeTransition(selectedTransitionIndex); setSelectedTransitionIndex(null);}}>Delete transition</button>
@@ -3814,9 +3824,9 @@ export default function Home() {
                           type="number"
                           min="0"
                           max="1"
-                          step="0.01"
+                          step="0.001"
                           value={
-                            t.probability
+                            fmtProbabilityInput(t.probability)
                           }
                           onChange={
                             e =>
