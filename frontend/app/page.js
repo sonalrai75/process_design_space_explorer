@@ -49,6 +49,19 @@ function fmtPct(v) {
   );
 }
 
+
+function fmtMax2(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "—";
+  return n.toFixed(2).replace(/\.?0+$/,"");
+}
+
+function fmtMax2Input(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "";
+  return String(Number(n.toFixed(2)));
+}
+
 function fmtProbabilityInput(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return "";
@@ -3136,15 +3149,15 @@ export default function Home() {
               />
               <Metric
                 label="Arrival rate / hr"
-                value={Number(
+                value={fmtMax2(
                   calibration.arrival_rate_per_hour
-                ).toFixed(2)}
+                )}
               />
               <Metric
                 label="Observed P95 cycle"
-                value={`${Number(
+                value={`${fmtMax2(
                   calibration.p95_cycle_minutes_observed
-                ).toFixed(1)} min`}
+                )} min`}
               />
               <Metric
                 label="Observed SLA"
@@ -3287,10 +3300,10 @@ export default function Home() {
                   fontSize:12,
                   color:"#6b7280"
                 }}>
-                  {
+                  {fmtMax2(
                     a.service_time
-                    .mean_minutes
-                  } min
+                    ?.mean_minutes
+                  )} min
                 </div>
               </div>
             )}
@@ -3655,7 +3668,7 @@ export default function Home() {
 
                     {(a.model_source === "event_log" || a.model_source === "configured") &&
                       <div style={{fontSize:12,color:"#64748b",marginTop:10}}>
-                        {a.service_time?.distribution} · mean {Number(a.service_time?.mean_minutes || 0).toFixed(1)} min · std {Number(a.service_time?.std_minutes || 0).toFixed(1)} min
+                        {a.service_time?.distribution} · mean {fmtMax2(a.service_time?.mean_minutes || 0)} min · std {fmtMax2(a.service_time?.std_minutes || 0)} min
                       </div>
                     }
 
@@ -3749,12 +3762,12 @@ export default function Home() {
                           type="number"
                           min="0.01"
                           step="0.1"
-                          value={
+                          value={fmtMax2Input(
                             a
                             .service_time
                             ?.mean_minutes
                             ?? 0
-                          }
+                          )}
                           onChange={
                             e =>
                               updateActivity(

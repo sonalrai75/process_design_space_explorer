@@ -19,6 +19,9 @@ export default function CellularizationPage() {
   const [status,setStatus] = useState("Loading current process model");
   const [cells,setCells] = useState([]);
   const [cellStatus,setCellStatus] = useState("");
+  const [experiment,setExperiment] = useState(null);
+  const [experimentStatus,setExperimentStatus] = useState("");
+  const [experimentBusy,setExperimentBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -143,6 +146,43 @@ export default function CellularizationPage() {
     setCellStatus("");
   }
 
+  const phase1Ready = useMemo(() => {
+    if (!model || !cells.length) return false;
+    const activitiesValid = enabledActivities.every(a => (activityAssignments[a.id] || []).length === 1);
+    const resourcesExact = (model.resources || []).every(r => (capacityUse[r.id] || 0) === Number(r.capacity || 0));
+    return activitiesValid && resourcesExact;
+  }, [model,cells,enabledActivities,activityAssignments,capacityUse]);
+
+  async function runPhase1Experiment() {
+    if (!model || !phase1Ready || !activeArchitecture) return;
+    setExperiment(null);
+    setExperimentBusy(true);
+    setExperimentStatus("Running paired Global vs Cellular / No Overflow experiment...");
+    try {
+      const experimentModel = {...model,cells};
+      const r = await fetch(`${API}/api/experiments/cellularization/phase1`, {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          model:experimentModel,
+          architecture_id:activeArchitecture.id,
+          cases:1200,
+          seed:700,
+          replications:12
+        })
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "Cellularization experiment failed");
+      setExperiment(data);
+      setExperimentStatus(`Completed ${data.replications || 0} paired replications.`);
+      setTimeout(() => document.getElementById("phase1-results")?.scrollIntoView({behavior:"smooth",block:"start"}), 50);
+    } catch (e) {
+      setExperimentStatus(`Experiment error: ${e.message || e}`);
+    } finally {
+      setExperimentBusy(false);
+    }
+  }
+
   function saveCells() {
     const over = (model?.resources || []).filter(r => (capacityUse[r.id] || 0) > Number(r.capacity || 0));
     if (over.length) {
@@ -262,14 +302,38 @@ export default function CellularizationPage() {
         </section>
 
         <section style={{...card,marginTop:18,background:"#f8fafc"}}>
-          <h2 style={{marginTop:0}}>Planned experiment sequence</h2>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(210px,1fr))",gap:10}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+            <div>
+              <h2 style={{margin:"0 0 5px"}}>Phase 1 experiment — Global vs Cellular / No Overflow</h2>
+              <div style={muted}>Uses the same process architecture, arrivals, service-time distributions, routing probabilities, total resource capacity, and common random-number seeds. Only resource pooling is changed.</div>
+            </div>
+            <button
+              onClick={runPhase1Experiment}
+              disabled={!phase1Ready || experimentBusy}
+              style={{padding:"10px 14px",borderRadius:8,border:"1px solid #4f46e5",background:phase1Ready && !experimentBusy?"#4f46e5":"#cbd5e1",color:"#fff",fontWeight:800,cursor:phase1Ready && !experimentBusy?"pointer":"default"}}
+            >
+              {experimentBusy ? "Running paired experiment..." : "Run Global vs Cellular / No Overflow"}
+            </button>
+          </div>
+
+          {!phase1Ready && <div style={{marginTop:12,padding:"10px 12px",border:"1px solid #fed7aa",background:"#fff7ed",borderRadius:8,fontSize:12,color:"#9a3412"}}>Before running, every enabled activity must belong to exactly one cell and every resource pool must be partitioned exactly to its global baseline capacity.</div>}
+          {experimentStatus && <div style={{marginTop:12,fontSize:12,fontWeight:700,color:experimentStatus.startsWith("Experiment error")?"#b91c1c":"#475569"}}>{experimentStatus}</div>}
+
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(210px,1fr))",gap:10,marginTop:14}}>
             <Step n="1" title="Define cells" text="Assign activities and resource capacity manually." />
-            <Step n="2" title="Global baseline" text="Use the current globally pooled operating structure." />
-            <Step n="3" title="Cellular / no overflow" text="Restrict eligible work to the defined local cells." />
-            <Step n="4" title="Paired comparison" text="Compare both structures with common random numbers." />
+            <Step n="2" title="Global baseline" text="Run with globally pooled baseline resources." />
+            <Step n="3" title="Cellular / no overflow" text="Partition the same capacity into exclusive local cell pools." />
+            <Step n="4" title="Paired comparison" text="Use identical seeds so demand and service-time randomness are paired." />
           </div>
         </section>
+
+        {experiment && <section id="phase1-results" style={{...card,marginTop:18}}>
+          <h2 style={{marginTop:0}}>Phase 1 paired results</h2>
+          <div style={{fontSize:12,color:"#64748b",marginBottom:12}}>
+            {experiment.replications} replications · {experiment.cases_per_replication} cases per replication · cellular minus global deltas are based on paired common-random-number runs.
+          </div>
+          <ComparisonTable experiment={experiment} />
+        </section>}
       </>}
     </main>
   );
@@ -282,6 +346,54 @@ function Summary({label,value}) {
       <div style={{fontSize:18,fontWeight:800,marginTop:5}}>{String(value ?? "—")}</div>
     </div>
   );
+}
+
+function fmtNum(v,digits=2) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "—";
+  return n.toFixed(digits).replace(/\.?0+$/,"");
+}
+
+function fmtPct(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? `${fmtNum(100*n,2)}%` : "—";
+}
+
+function ComparisonTable({experiment}) {
+  const g = experiment?.global?.metrics || {};
+  const c = experiment?.cellular_no_overflow?.metrics || {};
+  const d = experiment?.paired_delta_cellular_minus_global?.mean || {};
+  const rows = [
+    ["Throughput / hr","throughput_per_hour","num"],
+    ["Mean cycle (min)","mean_cycle_minutes","num"],
+    ["Median cycle (min)","median_cycle_minutes","num"],
+    ["P95 cycle (min)","p95_cycle_minutes","num"],
+    ["SLA attainment","sla_attainment","pct"],
+    ["Average WIP","avg_wip","num"],
+    ["Max resource utilization","max_resource_utilization","pct"],
+    ["Backlog growth / hr","backlog_growth_per_hour","num"],
+    ["Annual cost","annual_cost","money"]
+  ];
+  const show = (v,type) => type === "pct" ? fmtPct(v) : type === "money" ? (Number.isFinite(Number(v)) ? `$${Number(v).toLocaleString(undefined,{maximumFractionDigits:0})}` : "—") : fmtNum(v,2);
+  const showDelta = (v,type) => {
+    const n=Number(v);
+    if (!Number.isFinite(n)) return "—";
+    const sign=n>0?"+":"";
+    if (type === "pct") return `${sign}${fmtNum(100*n,2)} pp`;
+    if (type === "money") return `${sign}$${Math.round(n).toLocaleString()}`;
+    return `${sign}${fmtNum(n,2)}`;
+  };
+  return <div style={{overflowX:"auto"}}>
+    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+      <thead><tr><th align="left" style={{padding:"8px 6px",borderBottom:"1px solid #e2e8f0"}}>Metric</th><th align="right" style={{padding:"8px 6px",borderBottom:"1px solid #e2e8f0"}}>Global pooling</th><th align="right" style={{padding:"8px 6px",borderBottom:"1px solid #e2e8f0"}}>Cellular / no overflow</th><th align="right" style={{padding:"8px 6px",borderBottom:"1px solid #e2e8f0"}}>Cellular − Global</th></tr></thead>
+      <tbody>{rows.map(([label,key,type]) => <tr key={key}>
+        <td style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9",fontWeight:700}}>{label}</td>
+        <td align="right" style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9"}}>{show(g[key],type)}</td>
+        <td align="right" style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9"}}>{show(c[key],type)}</td>
+        <td align="right" style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9",fontWeight:700}}>{showDelta(d[key],type)}</td>
+      </tr>)}</tbody>
+    </table>
+  </div>;
 }
 
 function Step({n,title,text}) {
