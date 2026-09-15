@@ -909,36 +909,69 @@ export default function Home() {
     options,
     actionLabel
   ) {
-    setRunningAction(
-      actionLabel
-      || "Running"
+    const label = actionLabel || "Running";
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      45000
     );
 
-    setStatus(
-      actionLabel
-      || "Running"
-    );
+    setRunningAction(label);
+    setStatus(label);
 
     try {
-      const r = await fetch(
-        `${API}${path}`,
-        options
-      );
-
-      const data =
-        await r.json();
-
-      if (!r.ok) {
-        throw new Error(
-          data.detail
-          || "Request failed"
+      let response;
+      try {
+        response = await fetch(
+          `${API}${path}`,
+          {
+            ...(options || {}),
+            signal:controller.signal
+          }
         );
+      } catch (error) {
+        if (error?.name === "AbortError") {
+          throw new Error(
+            `${label} timed out while waiting for the API. Check the backend deployment and try again.`
+          );
+        }
+        throw new Error(
+          `Unable to reach the API while ${label.toLowerCase()}: ${error?.message || "network error"}`
+        );
+      }
+
+      const text = await response.text();
+      let data = null;
+      if (text) {
+        try {
+          data = JSON.parse(text);
+        } catch {
+          if (!response.ok) {
+            throw new Error(
+              `${label} failed with HTTP ${response.status}. ${text.slice(0, 240)}`
+            );
+          }
+          throw new Error(
+            `${label} returned an invalid API response.`
+          );
+        }
+      }
+
+      if (!response.ok) {
+        const detail =
+          typeof data?.detail === "string"
+            ? data.detail
+            : data?.detail
+              ? JSON.stringify(data.detail)
+              : `HTTP ${response.status}`;
+        throw new Error(`${label} failed: ${detail}`);
       }
 
       setStatus("Ready");
       return data;
 
     } finally {
+      clearTimeout(timeout);
       setRunningAction(null);
     }
   }
@@ -2490,6 +2523,7 @@ export default function Home() {
 
           <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:14}}>
             <button
+              type="button"
               disabled={busy}
               style={{...primaryButtonStyle,opacity:busy ? 0.55 : 1}}
               onClick={loadContactCenterSample}
@@ -2531,6 +2565,7 @@ export default function Home() {
             />
 
             <button
+              type="button"
               disabled={busy || !logFile}
               style={{...buttonStyle,opacity:busy || !logFile ? 0.55 : 1}}
               onClick={previewContactCenterWorkbook}
@@ -2539,6 +2574,7 @@ export default function Home() {
             </button>
 
             <button
+              type="button"
               disabled={busy || !logFile}
               style={{...primaryButtonStyle,opacity:busy || !logFile ? 0.55 : 1}}
               onClick={importContactCenterWorkbook}
@@ -2590,6 +2626,7 @@ export default function Home() {
 
         <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:14}}>
           <button
+              type="button"
             disabled={busy}
             style={{...buttonStyle,opacity:busy ? 0.55 : 1}}
             onClick={loadGeneralProcessSample}
@@ -2627,6 +2664,7 @@ export default function Home() {
           />
 
           <button
+              type="button"
             disabled={
               busy || !logFile
             }
@@ -2731,6 +2769,7 @@ export default function Home() {
             </div>
 
             <button
+              type="button"
               disabled={busy}
               style={{
                 ...buttonStyle,
@@ -2865,7 +2904,7 @@ export default function Home() {
                                 No valid service-time observations.{item.suggested_terminal ? " This activity appears at the end of observed cases, but confirmation is required." : ""}
                               </div>
                             </div>
-                            <button style={buttonStyle} onClick={() => resolveTimingAsMilestone(item.activity)}>
+                            <button type="button" style={buttonStyle} onClick={() => resolveTimingAsMilestone(item.activity)}>
                               Terminal / milestone
                             </button>
                           </div>
@@ -2880,7 +2919,7 @@ export default function Home() {
                             <label style={{fontSize:11,color:"#475569"}}>Triangular max (min)
                               <input type="number" min="0" step="0.1" value={draft.max ?? Number(Math.max(center * 1.5, center + 0.1).toFixed(1))} onChange={e => updateTimingDraft(item.activity,"max",e.target.value)} style={{width:"100%",marginTop:4}} />
                             </label>
-                            <button style={buttonStyle} onClick={() => resolveTimingTriangular(item.activity)}>
+                            <button type="button" style={buttonStyle} onClick={() => resolveTimingTriangular(item.activity)}>
                               Use triangular
                             </button>
                           </div>
@@ -2892,7 +2931,7 @@ export default function Home() {
                                 {sources.map(a => <option key={a.id} value={a.name}>{a.name}</option>)}
                               </select>
                             </label>
-                            <button disabled={!sources.length} style={{...buttonStyle,opacity:sources.length ? 1 : 0.55}} onClick={() => resolveTimingFromSimilar(item.activity)}>
+                            <button type="button" disabled={!sources.length} style={{...buttonStyle,opacity:sources.length ? 1 : 0.55}} onClick={() => resolveTimingFromSimilar(item.activity)}>
                               Copy distribution
                             </button>
                           </div>
@@ -2930,6 +2969,7 @@ export default function Home() {
           </div>
         }
         <button
+              type="button"
           disabled={busy || !model || !timingReady}
           style={{...primaryButtonStyle,opacity:busy || !model || !timingReady ? 0.55 : 1}}
           onClick={runSimulation}
@@ -2947,7 +2987,7 @@ export default function Home() {
               Manually define cells, then compare <b>Global Pooling + FCFS</b> against <b>Cellular / No Overflow + FCFS</b> using the same process, demand, distributions, resources, skills, routing and paired random seeds.
             </p>
           </div>
-          <button disabled={!model || busy} style={{...buttonStyle,opacity:!model || busy ? 0.55 : 1}} onClick={addCell}>+ Create cell</button>
+          <button type="button" disabled={!model || busy} style={{...buttonStyle,opacity:!model || busy ? 0.55 : 1}} onClick={addCell}>+ Create cell</button>
         </div>
 
         {!model && <div style={{fontSize:12,color:"#64748b"}}>Load a process model first.</div>}
@@ -2964,7 +3004,7 @@ export default function Home() {
               <label style={{fontSize:11,color:"#64748b"}}>Optional capacity limit
                 <input type="number" min="1" value={cell.capacity_limit ?? ""} onChange={e => updateCell(cell.id,"capacity_limit",e.target.value === "" ? null : Number(e.target.value))} style={{display:"block",marginTop:4,width:130}} />
               </label>
-              <button style={buttonStyle} onClick={() => removeCell(cell.id)}>Remove</button>
+              <button type="button" style={buttonStyle} onClick={() => removeCell(cell.id)}>Remove</button>
             </div>
 
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(260px,1fr))",gap:12,marginTop:12}}>
@@ -3001,7 +3041,7 @@ export default function Home() {
                 <div style={{fontSize:13,fontWeight:800,color:"#0f172a"}}>Work types → preferred cell</div>
                 <div style={{fontSize:11,color:"#64748b",marginTop:2}}>Phase 1 uses this assignment only in the Cellular / No Overflow scenario. Global pooling ignores it.</div>
               </div>
-              <button style={buttonStyle} onClick={addWorkType}>+ Add work type</button>
+              <button type="button" style={buttonStyle} onClick={addWorkType}>+ Add work type</button>
             </div>
             <div style={{overflowX:"auto",marginTop:8}}>
               <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
@@ -3020,7 +3060,7 @@ export default function Home() {
                         <option value="">Select cell...</option>
                         {(model?.cells || []).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                       </select></td>
-                      <td style={{padding:6}}><button style={buttonStyle} onClick={() => removeWorkType(w.id)}>Remove</button></td>
+                      <td style={{padding:6}}><button type="button" style={buttonStyle} onClick={() => removeWorkType(w.id)}>Remove</button></td>
                     </tr>
                   ))}
                 </tbody>
@@ -3037,7 +3077,7 @@ export default function Home() {
             <label style={{fontSize:11,color:"#64748b"}}>Replications
               <input type="number" min="2" max="50" value={experimentReplications} onChange={e => setExperimentReplications(e.target.value)} style={{display:"block",marginTop:4,width:100}} />
             </label>
-            <button disabled={busy || !model || !timingReady || !(model?.cells || []).length} style={{...primaryButtonStyle,opacity:busy || !model || !timingReady || !(model?.cells || []).length ? 0.55 : 1}} onClick={runCellularPhase1Experiment}>
+            <button type="button" disabled={busy || !model || !timingReady || !(model?.cells || []).length} style={{...primaryButtonStyle,opacity:busy || !model || !timingReady || !(model?.cells || []).length ? 0.55 : 1}} onClick={runCellularPhase1Experiment}>
               {runningAction === "Running cellularization experiment" ? "Experiment running..." : "Run Global vs Cell experiment"}
             </button>
           </div>
@@ -3152,6 +3192,7 @@ export default function Home() {
             </p>
 
             <button
+              type="button"
               disabled={busy || !model || !timingReady}
               style={{
                 ...primaryButtonStyle,
@@ -3201,6 +3242,7 @@ export default function Home() {
             </p>
 
             <button
+              type="button"
               disabled={busy || !model || !timingReady}
               style={{
                 ...accentButtonStyle,
@@ -3225,6 +3267,7 @@ export default function Home() {
           </div>
 
           <button
+              type="button"
             disabled={busy}
             style={{
               ...primaryButtonStyle,
@@ -3342,6 +3385,7 @@ export default function Home() {
               flexWrap:"wrap"
             }}>
               <button
+              type="button"
                 disabled={busy}
                 style={buttonStyle}
                 onClick={addActivity}
@@ -3350,6 +3394,7 @@ export default function Home() {
               </button>
 
               <button
+              type="button"
                 disabled={busy}
                 style={buttonStyle}
                 onClick={addTransition}
@@ -3358,6 +3403,7 @@ export default function Home() {
               </button>
 
               <button
+              type="button"
                 disabled={busy}
                 style={buttonStyle}
                 onClick={downloadModel}
@@ -3488,6 +3534,7 @@ export default function Home() {
                           .end_activity
                           &&
                           <button
+              type="button"
                             style={buttonStyle}
                             onClick={
                               () =>
@@ -3653,6 +3700,7 @@ export default function Home() {
 
                       <td>
                         <button
+              type="button"
                           style={buttonStyle}
                           onClick={
                             () =>
@@ -3953,6 +4001,7 @@ export default function Home() {
               </div>
             </div>
             <button
+              type="button"
               style={buttonStyle}
               onClick={openManualSvd}
             >
