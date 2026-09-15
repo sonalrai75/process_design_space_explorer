@@ -1090,6 +1090,47 @@ function FrontierCard({title,item,target}) {
   );
 }
 
+
+function OptimizationImmediateSummary({opt}) {
+  if (!opt) return null;
+  const results = Array.isArray(opt?.results) ? opt.results : [];
+  return (
+    <div style={{...card,marginTop:12,background:"#f8fafc",border:"1px solid #cbd5e1"}}>
+      <div style={{fontSize:12,fontWeight:800,textTransform:"uppercase",color:"#475569"}}>Optimization output</div>
+      {results.length ? (
+        <>
+          <div style={{fontSize:14,marginTop:6,color:"#0f172a"}}>
+            Completed successfully · <b>{results.length}</b> architecture result{results.length === 1 ? "" : "s"}.
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:8,marginTop:10}}>
+            {results.map((r,i) => {
+              const cost = Number(r?.best?.metrics?.annual_cost);
+              const prob = Number(r?.robustness?.probability);
+              return (
+                <div key={`${r?.architecture || i}`} style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:10,padding:10}}>
+                  <div style={{fontWeight:800}}>{r?.architecture || `Architecture ${i+1}`}</div>
+                  <div style={{fontSize:12,color:"#475569",marginTop:4}}>
+                    {Number.isFinite(cost) ? `Annual cost ${money(cost)}` : "No selected design cost returned"}
+                    {Number.isFinite(prob) ? ` · replicated feasibility ${fmtPct(prob)}` : ""}
+                  </div>
+                  <div style={{fontSize:12,fontWeight:700,marginTop:4,color:r?.robust_target_met ? "#166534" : "#991b1b"}}>
+                    {r?.robust_target_met ? "ROBUSTNESS TARGET MET" : "ROBUSTNESS TARGET NOT MET"}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <a href="#optimization-results" style={{display:"inline-block",marginTop:10,fontSize:12,fontWeight:700,color:"#4338ca"}}>View full optimization details ↓</a>
+        </>
+      ) : (
+        <div style={{fontSize:13,marginTop:6,color:"#991b1b"}}>
+          The optimization request completed, but the response did not contain a results array.
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Home() {
   const [
     status,
@@ -1130,6 +1171,11 @@ export default function Home() {
     opt,
     setOpt
   ] = useState(null);
+
+  const [
+    optError,
+    setOptError
+  ] = useState("");
 
   const [
     cmp,
@@ -1359,15 +1405,13 @@ export default function Home() {
   async function runOptimize() {
     try {
       setOpt(null);
+      setOptError("");
 
       const result = await call(
         "/api/optimize",
         {
           method:"POST",
-          headers:{
-            "Content-Type":
-              "application/json"
-          },
+          headers:{"Content-Type":"application/json"},
           body:JSON.stringify({
             model:model || undefined,
             robustness_target:0.90
@@ -1376,20 +1420,28 @@ export default function Home() {
         "Running robust optimization"
       );
 
+      if (!result || !Array.isArray(result.results)) {
+        const message = "Optimization completed, but the API response did not contain the expected results array.";
+        setOpt(result || {});
+        setOptError(message);
+        setStatus(message);
+        return;
+      }
+
       setOpt(result);
-      setStatus(
-        `Optimization complete${result?.results?.length ? ` · ${result.results.length} architecture result${result.results.length === 1 ? "" : "s"}` : ""}`
-      );
+      setStatus(`Optimization complete · ${result.results.length} architecture result${result.results.length === 1 ? "" : "s"}`);
 
       setTimeout(() => {
-        document.getElementById("optimization-results")?.scrollIntoView({
+        document.getElementById("optimization-immediate")?.scrollIntoView({
           behavior:"smooth",
-          block:"start"
+          block:"center"
         });
       }, 50);
 
     } catch(e) {
-      setStatus(e.message);
+      const message = e?.message || "Optimization request failed";
+      setOptError(message);
+      setStatus(message);
     }
   }
 
@@ -3310,6 +3362,15 @@ export default function Home() {
           >
             Compare selected TO-BE
           </button>
+        </div>
+
+        <div id="optimization-immediate">
+          {optError &&
+            <div style={{...card,marginTop:12,background:"#fef2f2",border:"1px solid #fecaca",color:"#991b1b",fontSize:13}}>
+              <b>Optimization error:</b> {optError}
+            </div>
+          }
+          {opt && <OptimizationImmediateSummary opt={opt} />}
         </div>
       </section>
       }
