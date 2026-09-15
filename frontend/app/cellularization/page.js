@@ -30,6 +30,8 @@ export default function CellularizationPage() {
           const parsed = JSON.parse(saved);
           if (!cancelled) {
             setModel(parsed);
+            const savedCells = localStorage.getItem("pds_cellularization_cells");
+            if (!savedCells && Array.isArray(parsed.cells)) setCells(parsed.cells);
             setStatus("Current workspace model loaded");
           }
           return;
@@ -40,6 +42,8 @@ export default function CellularizationPage() {
         const data = await r.json();
         if (!cancelled) {
           setModel(data);
+          const savedCells = localStorage.getItem("pds_cellularization_cells");
+          if (!savedCells && Array.isArray(data.cells)) setCells(data.cells);
           setStatus("Demo model loaded because no workspace model was saved");
         }
       } catch (e) {
@@ -145,8 +149,11 @@ export default function CellularizationPage() {
       setCellStatus(`Cannot save: allocated capacity exceeds baseline for ${over.map(r => r.name || r.id).join(", ")}.`);
       return;
     }
+    const nextModel = {...model,cells};
+    setModel(nextModel);
     localStorage.setItem("pds_cellularization_cells",JSON.stringify(cells));
-    setCellStatus(`Saved ${cells.length} cell definition${cells.length === 1 ? "" : "s"} locally.`);
+    localStorage.setItem("pds_cellularization_model",JSON.stringify(nextModel));
+    setCellStatus(`Saved ${cells.length} cell definition${cells.length === 1 ? "" : "s"} into the current model.`);
   }
 
   return (

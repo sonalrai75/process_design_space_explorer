@@ -110,6 +110,23 @@ class Architecture(BaseModel):
     transitions: list[Transition]
 
 
+class WorkType(BaseModel):
+    id: str
+    name: str
+    probability: float = 1.0
+    preferred_cell_id: str | None = None
+
+
+class CellDefinition(BaseModel):
+    id: str
+    name: str
+    activity_ids: list[str] = Field(default_factory=list)
+    resource_capacities: dict[str, int] = Field(default_factory=dict)
+    preferred_work_types: list[str] = Field(default_factory=list)
+    capacity_limit: int | None = None
+    cross_cell_eligible: bool = False
+
+
 class ProcessModel(BaseModel):
     workflow_class: Literal['general', 'contact_center'] = 'general'
     id: str = 'process-1'
@@ -121,6 +138,8 @@ class ProcessModel(BaseModel):
     agents: list[ResourceAgent] = Field(default_factory=list)
     architectures: list[Architecture]
     variables: list[DesignVariable]
+    work_types: list[WorkType] = Field(default_factory=list)
+    cells: list[CellDefinition] = Field(default_factory=list)
     arrival_rate_per_hour: float = 6.0
     sla_minutes: float = 480.0
     arrival_profile: list[ArrivalInterval] = Field(default_factory=list)
