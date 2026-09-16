@@ -856,6 +856,7 @@ function StructuralAnalysisPanel({analysis}) {
 
 
 function CandidateDesignsPanel({candidateSet,model,onLoad}) {
+  const finite = v => v !== null && v !== undefined && Number.isFinite(Number(v));
   const candidates = candidateSet?.candidates || [];
   const byK = [...new Set(candidates.map(c => c.k))].sort((a,b) => a-b);
   const activityName = id => (model?.activities || []).find(a => a.id === id)?.name || id;
