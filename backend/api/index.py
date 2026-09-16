@@ -14,6 +14,7 @@ from .core.simulation import simulate
 from .core.cellularization import run_phase1_paired_comparison, run_phase2_paired_comparison
 from .core.scheduling import run_phase3_scheduling_matrix
 from .core.structural_analysis import analyze_cell_structure
+from .core.candidate_generation import generate_cell_candidates
 from .core.calibration import preview_event_log, calibrate_event_log
 from .core.contact_center_excel import (
     preview_contact_center_workbook,
@@ -128,6 +129,13 @@ class CellularizationPhase3Request(BaseModel):
 class CellularizationStructuralAnalysisRequest(BaseModel):
     model: ProcessModel = DEMO_MODEL
     architecture_id: str | None = None
+    weights: dict[str, float] = {}
+
+
+class CellularizationCandidateGenerationRequest(BaseModel):
+    model: ProcessModel = DEMO_MODEL
+    architecture_id: str | None = None
+    k_values: list[int] = [2, 3]
     weights: dict[str, float] = {}
 
 
@@ -410,6 +418,20 @@ def cellularization_structural_analysis_endpoint(req: CellularizationStructuralA
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+@app.post("/api/cellularization/generate-candidates")
+def cellularization_candidate_generation_endpoint(req: CellularizationCandidateGenerationRequest):
+    try:
+        architecture_id = req.architecture_id or req.model.architectures[0].id
+        return generate_cell_candidates(
+            req.model,
+            architecture_id,
+            k_values=req.k_values,
+            structural_weights=req.weights,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 @app.post("/api/experiments/cellularization/phase1")
 def cellularization_phase1_endpoint(req: CellularizationPhase1Request):

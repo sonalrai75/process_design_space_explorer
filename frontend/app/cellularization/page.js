@@ -50,6 +50,9 @@ export default function CellularizationPage() {
   const [structuralStatus,setStructuralStatus] = useState("");
   const [structuralBusy,setStructuralBusy] = useState(false);
   const [structuralWeights,setStructuralWeights] = useState(DEFAULT_STRUCTURAL_WEIGHTS);
+  const [candidateSet,setCandidateSet] = useState(null);
+  const [candidateStatus,setCandidateStatus] = useState("");
+  const [candidateBusy,setCandidateBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -222,6 +225,51 @@ export default function CellularizationPage() {
     setStructuralWeights(prev => ({...prev,[key]:n}));
     setStructuralAnalysis(null);
     setStructuralStatus("Weights changed. Rerun structural analysis to update the score.");
+  }
+
+  async function generateCandidateCells() {
+    if (!model || !activeArchitecture) return;
+    setCandidateSet(null);
+    setCandidateBusy(true);
+    setCandidateStatus("Generating structurally coherent 2-cell and 3-cell candidates...");
+    try {
+      const r = await fetch(`${API}/api/cellularization/generate-candidates`, {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          model,
+          architecture_id:activeArchitecture.id,
+          k_values:[2,3],
+          weights:structuralWeights
+        })
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "Candidate generation failed");
+      setCandidateSet(data);
+      setCandidateStatus(`Generated ${data.candidate_count || 0} distinct candidate design${Number(data.candidate_count || 0) === 1 ? "" : "s"}. No candidate is automatically recommended; inspect and simulate before judging performance.`);
+      setTimeout(() => document.getElementById("candidate-cell-designs")?.scrollIntoView({behavior:"smooth",block:"start"}),50);
+    } catch (e) {
+      setCandidateStatus(`Candidate generation error: ${e.message || e}`);
+    } finally {
+      setCandidateBusy(false);
+    }
+  }
+
+  function loadCandidateIntoEditor(candidate) {
+    const loaded = (candidate?.cells || []).map((c,idx) => ({
+      ...c,
+      id:`cell_${Date.now()}_${idx+1}`,
+      name:c.name || `Cell ${idx+1}`,
+      cross_cell_eligible:false
+    }));
+    setCells(loaded);
+    setStructuralAnalysis(null);
+    setPhase2Experiment(null);
+    setExperiment(null);
+    setPhase3Experiment(null);
+    setSensitivityResults(null);
+    setCellStatus(`Loaded ${candidate.profile_label || candidate.id} (${candidate.k} cells) into the editable design. Review it, adjust if needed, then Save cell design before running experiments.`);
+    setTimeout(() => document.getElementById("manual-cell-design")?.scrollIntoView({behavior:"smooth",block:"start"}),50);
   }
 
   async function runPhase2Experiment() {
@@ -409,7 +457,7 @@ export default function CellularizationPage() {
           </div>
         </section>
 
-        <section style={{...card,marginTop:18}}>
+        <section id="manual-cell-design" style={{...card,marginTop:18}}>
           <div style={{display:"flex",justifyContent:"space-between",gap:12,alignItems:"center",flexWrap:"wrap"}}>
             <div>
               <h2 style={{margin:"0 0 5px"}}>Phase 1 — Manual cell design</h2>
@@ -520,9 +568,9 @@ export default function CellularizationPage() {
                 skill_duplication_penalty:"Scarce-skill duplication",
                 pooling_loss_penalty:"Pooling loss",
                 overflow_pressure_penalty:"Overflow pressure"
-              }).map(([key,label]) => <label key={key} style={{fontSize:11,color:"#475569",fontWeight:700}}>
-                {label}
-                <input type="number" min="0" step="0.25" value={structuralWeights[key]} onChange={e => setStructuralWeight(key,e.target.value)} style={{display:"block",width:"100%",marginTop:4,padding:"6px 7px",border:"1px solid #cbd5e1",borderRadius:7}} />
+              }).map(([key,label]) => <label key={key} style={{display:"block",fontSize:11,color:"#475569",fontWeight:800,padding:"9px 10px",border:"1px solid #e2e8f0",borderRadius:9,background:"#fff"}}>
+                <span style={{display:"block",minHeight:15}}>{label}</span>
+                <input type="number" min="0" step="0.25" value={structuralWeights[key]} onChange={e => setStructuralWeight(key,e.target.value)} style={{display:"block",width:"100%",marginTop:6,padding:"6px 7px",border:"1px solid #cbd5e1",borderRadius:7}} />
               </label>)}
             </div>
           </div>
@@ -530,6 +578,30 @@ export default function CellularizationPage() {
           {structuralStatus && <div style={{marginTop:12,fontSize:12,fontWeight:700,color:structuralStatus.startsWith("Analysis error")?"#b91c1c":"#475569"}}>{structuralStatus}</div>}
 
           {structuralAnalysis && <StructuralAnalysisPanel analysis={structuralAnalysis} />}
+        </section>
+
+        <section id="candidate-cell-designs" style={{...card,marginTop:18}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+            <div>
+              <div style={{fontSize:11,fontWeight:800,color:"#7c3aed",textTransform:"uppercase",letterSpacing:".06em"}}>Stage 1 candidate generation</div>
+              <h2 style={{margin:"4px 0 5px"}}>Generate alternative cell structures</h2>
+              <div style={muted}>Creates structurally coherent 2-cell and 3-cell alternatives from routing, graph topology, processing-time similarity, and resource compatibility. This is decision support, not an automatic recommendation.</div>
+            </div>
+            <button
+              onClick={generateCandidateCells}
+              disabled={!model || !activeArchitecture || candidateBusy || enabledActivities.length < 2}
+              style={{padding:"10px 14px",borderRadius:8,border:"1px solid #7c3aed",background:(!candidateBusy && enabledActivities.length >= 2)?"#7c3aed":"#cbd5e1",color:"#fff",fontWeight:800,cursor:(!candidateBusy && enabledActivities.length >= 2)?"pointer":"default"}}
+            >
+              {candidateBusy ? "Generating candidates..." : "Generate 2-cell & 3-cell candidates"}
+            </button>
+          </div>
+
+          <div style={{marginTop:12,padding:"10px 12px",border:"1px solid #ddd6fe",background:"#f5f3ff",borderRadius:9,fontSize:12,color:"#5b21b6",lineHeight:1.5}}>
+            Three similarity profiles are attempted for each cell count: balanced, routing/topology emphasis, and processing-character emphasis. Duplicate partitions are removed. Resource capacity is partitioned without duplication. Simulation is deliberately not run at this stage.
+          </div>
+
+          {candidateStatus && <div style={{marginTop:12,fontSize:12,fontWeight:700,color:candidateStatus.startsWith("Candidate generation error")?"#b91c1c":"#475569"}}>{candidateStatus}</div>}
+          {candidateSet?.candidates?.length > 0 && <CandidateDesignsPanel candidateSet={candidateSet} model={model} onLoad={loadCandidateIntoEditor} />}
         </section>
 
         <section style={{...card,marginTop:18,background:"#f8fafc"}}>
@@ -782,6 +854,60 @@ function StructuralAnalysisPanel({analysis}) {
   </div>;
 }
 
+
+function CandidateDesignsPanel({candidateSet,model,onLoad}) {
+  const candidates = candidateSet?.candidates || [];
+  const byK = [...new Set(candidates.map(c => c.k))].sort((a,b) => a-b);
+  const activityName = id => (model?.activities || []).find(a => a.id === id)?.name || id;
+  const resourceName = id => (model?.resources || []).find(r => r.id === id)?.name || id;
+
+  return <div style={{marginTop:16}}>
+    {byK.map(k => <div key={k} style={{marginTop:14}}>
+      <div style={{fontWeight:900,fontSize:14,color:"#334155"}}>{k}-cell alternatives</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))",gap:12,marginTop:8}}>
+        {candidates.filter(c => c.k === k).map(c => {
+          const a = c.structural_analysis || {};
+          const score = a.score?.decision_support_score;
+          const cross = a.routing_localization?.cross_cell_transition_fraction;
+          const cv = a.balance?.workload_cv;
+          const coverage = a.resource_fit?.skill_coverage_fraction;
+          return <div key={c.id} style={{border:"1px solid #ddd6fe",borderRadius:12,padding:14,background:"#fafafa"}}>
+            <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"flex-start"}}>
+              <div>
+                <div style={{fontSize:11,fontWeight:900,color:"#7c3aed",textTransform:"uppercase"}}>{c.profile_label}</div>
+                <div style={{fontSize:18,fontWeight:900,marginTop:3}}>{k} cells</div>
+              </div>
+              <button onClick={() => onLoad(c)} style={{padding:"7px 9px",borderRadius:7,border:"1px solid #7c3aed",background:"#fff",color:"#6d28d9",fontWeight:800,cursor:"pointer"}}>Load into editor</button>
+            </div>
+
+            <div style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:7,marginTop:10}}>
+              <MiniStat label="Structural score" value={finite(score)?fmtNum(score,2):"N/A"} />
+              <MiniStat label="Cross-cell routing" value={finite(cross)?fmtPct(cross):"N/A"} />
+              <MiniStat label="Workload CV" value={finite(cv)?fmtNum(cv,3):"N/A"} />
+              <MiniStat label="Skill coverage" value={finite(coverage)?fmtPct(coverage):"N/A"} />
+            </div>
+
+            <div style={{marginTop:10,display:"grid",gap:8}}>
+              {(c.cells || []).map((cell,idx) => <div key={cell.id} style={{padding:"9px 10px",border:"1px solid #e2e8f0",borderRadius:9,background:"#fff"}}>
+                <div style={{fontSize:12,fontWeight:900}}>Cell {idx+1}</div>
+                <div style={{fontSize:11,color:"#475569",marginTop:4,lineHeight:1.45}}><b>Activities:</b> {(cell.activity_ids || []).map(activityName).join(", ") || "—"}</div>
+                <div style={{fontSize:11,color:"#475569",marginTop:3,lineHeight:1.45}}><b>Resources:</b> {Object.entries(cell.resource_capacities || {}).filter(([,v]) => Number(v) > 0).map(([rid,v]) => `${resourceName(rid)}×${v}`).join(", ") || "—"}</div>
+                <div style={{fontSize:11,color:"#64748b",marginTop:5,lineHeight:1.45}}>{c.explanations?.[idx]?.text}</div>
+              </div>)}
+            </div>
+
+            <div style={{fontSize:10,color:"#64748b",marginTop:9}}>Similarity mix: routing {fmtPct(c.similarity_weights?.routing)} · topology {fmtPct(c.similarity_weights?.topology)} · processing {fmtPct(c.similarity_weights?.processing)} · resource {fmtPct(c.similarity_weights?.resource)}</div>
+          </div>;
+        })}
+      </div>
+    </div>)}
+    <div style={{marginTop:12,fontSize:11,color:"#64748b",lineHeight:1.5}}>These alternatives are not ranked as operational winners. Load any candidate into the editor, modify it if desired, then use the existing structural analysis and paired simulation experiments to evaluate it.</div>
+  </div>;
+}
+
+function MiniStat({label,value}) {
+  return <div style={{padding:"7px 8px",border:"1px solid #e2e8f0",borderRadius:8,background:"#fff"}}><div style={{fontSize:10,color:"#64748b"}}>{label}</div><div style={{fontSize:13,fontWeight:900,marginTop:2}}>{value}</div></div>;
+}
 
 function StructurePerformanceInterpretation({analysis,experiment}) {
   const g = experiment?.global?.metrics || {};
