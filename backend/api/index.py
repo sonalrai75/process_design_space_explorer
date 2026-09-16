@@ -13,6 +13,7 @@ from .core.mining import mine_log, compare_mined_logs
 from .core.simulation import simulate
 from .core.cellularization import run_phase1_paired_comparison, run_phase2_paired_comparison
 from .core.scheduling import run_phase3_scheduling_matrix
+from .core.structural_analysis import analyze_cell_structure
 from .core.calibration import preview_event_log, calibrate_event_log
 from .core.contact_center_excel import (
     preview_contact_center_workbook,
@@ -122,6 +123,12 @@ class CellularizationPhase3Request(BaseModel):
     replications: int = 8
     local_wait_threshold_minutes: float = 30.0
     max_overflow_fraction: float = 1.0
+
+
+class CellularizationStructuralAnalysisRequest(BaseModel):
+    model: ProcessModel = DEMO_MODEL
+    architecture_id: str | None = None
+    weights: dict[str, float] = {}
 
 
 class CompareRequest(BaseModel):
@@ -390,6 +397,19 @@ def optimize_endpoint(
             detail=str(e),
         )
 
+
+
+@app.post("/api/cellularization/structural-analysis")
+def cellularization_structural_analysis_endpoint(req: CellularizationStructuralAnalysisRequest):
+    try:
+        architecture_id = req.architecture_id or (req.model.architectures[0].id if req.model.architectures else "baseline")
+        return analyze_cell_structure(
+            req.model,
+            architecture_id,
+            weights=req.weights,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 @app.post("/api/experiments/cellularization/phase1")
 def cellularization_phase1_endpoint(req: CellularizationPhase1Request):

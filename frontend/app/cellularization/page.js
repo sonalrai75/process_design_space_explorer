@@ -14,6 +14,19 @@ const card = {
 
 const muted = {color:"#64748b",lineHeight:1.5};
 
+const DEFAULT_STRUCTURAL_WEIGHTS = {
+  work_type_entropy:1,
+  routing_entropy:1,
+  skill_entropy:1,
+  activity_entropy:1,
+  processing_entropy:0.5,
+  fragmentation_penalty:0.5,
+  capacity_imbalance_penalty:0.75,
+  skill_duplication_penalty:0.5,
+  pooling_loss_penalty:0.75,
+  overflow_pressure_penalty:1
+};
+
 export default function CellularizationPage() {
   const [model,setModel] = useState(null);
   const [status,setStatus] = useState("Loading current process model");
@@ -33,6 +46,10 @@ export default function CellularizationPage() {
   const [sensitivityResults,setSensitivityResults] = useState(null);
   const [sensitivityStatus,setSensitivityStatus] = useState("");
   const [sensitivityBusy,setSensitivityBusy] = useState(false);
+  const [structuralAnalysis,setStructuralAnalysis] = useState(null);
+  const [structuralStatus,setStructuralStatus] = useState("");
+  const [structuralBusy,setStructuralBusy] = useState(false);
+  const [structuralWeights,setStructuralWeights] = useState(DEFAULT_STRUCTURAL_WEIGHTS);
 
   useEffect(() => {
     let cancelled = false;
@@ -164,9 +181,48 @@ export default function CellularizationPage() {
     return activitiesValid && resourcesExact;
   }, [model,cells,enabledActivities,activityAssignments,capacityUse]);
 
+  const structuralReady = useMemo(() => {
+    if (!model || !cells.length) return false;
+    return enabledActivities.every(a => (activityAssignments[a.id] || []).length === 1);
+  }, [model,cells,enabledActivities,activityAssignments]);
+
   const phase2Ready = useMemo(() => {
     return phase1Ready && cells.some(c => !!c.cross_cell_eligible);
   }, [phase1Ready,cells]);
+
+  async function runStructuralAnalysis() {
+    if (!model || !structuralReady || !activeArchitecture) return;
+    setStructuralAnalysis(null);
+    setStructuralBusy(true);
+    setStructuralStatus("Analyzing structural coherence of the current cell design...");
+    try {
+      const analysisModel = {...model,cells};
+      const r = await fetch(`${API}/api/cellularization/structural-analysis`, {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          model:analysisModel,
+          architecture_id:activeArchitecture.id,
+          weights:structuralWeights
+        })
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "Structural analysis failed");
+      setStructuralAnalysis(data);
+      setStructuralStatus("Structural analysis complete. Lower score means structurally cleaner under the selected weights; simulation still determines operational value.");
+    } catch (e) {
+      setStructuralStatus(`Analysis error: ${e.message || e}`);
+    } finally {
+      setStructuralBusy(false);
+    }
+  }
+
+  function setStructuralWeight(key,value) {
+    const n = Math.max(0,Number(value) || 0);
+    setStructuralWeights(prev => ({...prev,[key]:n}));
+    setStructuralAnalysis(null);
+    setStructuralStatus("Weights changed. Rerun structural analysis to update the score.");
+  }
 
   async function runPhase2Experiment() {
     if (!model || !phase2Ready || !activeArchitecture) return;
@@ -431,6 +487,51 @@ export default function CellularizationPage() {
           </div>}
         </section>
 
+        <section style={{...card,marginTop:18}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+            <div>
+              <div style={{fontSize:11,fontWeight:800,color:"#4f46e5",textTransform:"uppercase",letterSpacing:".06em"}}>Decision support</div>
+              <h2 style={{margin:"4px 0 5px"}}>Cell Structural Analysis</h2>
+              <div style={muted}>Measures how much operational variety is localized by the current cell design. Entropy is a structural heuristic only; it does not replace simulation.</div>
+            </div>
+            <button
+              onClick={runStructuralAnalysis}
+              disabled={!structuralReady || structuralBusy}
+              style={{padding:"10px 14px",borderRadius:8,border:"1px solid #4f46e5",background:structuralReady && !structuralBusy?"#4f46e5":"#cbd5e1",color:"#fff",fontWeight:800,cursor:structuralReady && !structuralBusy?"pointer":"default"}}
+            >
+              {structuralBusy ? "Analyzing..." : "Analyze Current Cell Design"}
+            </button>
+          </div>
+
+          {!structuralReady && <div style={{marginTop:12,padding:"10px 12px",border:"1px solid #fed7aa",background:"#fff7ed",borderRadius:9,fontSize:12,color:"#9a3412"}}>Assign every enabled activity to exactly one cell before running structural analysis. Resource allocation may still be edited; incomplete capacity will appear in the fit/penalty measures.</div>}
+
+          <div style={{marginTop:16}}>
+            <div style={{fontWeight:800,fontSize:13}}>Configurable structural weights</div>
+            <div style={{fontSize:11,color:"#64748b",marginTop:4}}>Weights change the decision-support score only. They do not change the cells or simulation. Set a weight to 0 to exclude that component.</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(185px,1fr))",gap:8,marginTop:10}}>
+              {Object.entries({
+                work_type_entropy:"Work-type entropy",
+                routing_entropy:"Routing entropy",
+                skill_entropy:"Skill entropy",
+                activity_entropy:"Activity entropy",
+                processing_entropy:"Processing entropy",
+                fragmentation_penalty:"Fragmentation penalty",
+                capacity_imbalance_penalty:"Capacity imbalance",
+                skill_duplication_penalty:"Scarce-skill duplication",
+                pooling_loss_penalty:"Pooling loss",
+                overflow_pressure_penalty:"Overflow pressure"
+              }).map(([key,label]) => <label key={key} style={{fontSize:11,color:"#475569",fontWeight:700}}>
+                {label}
+                <input type="number" min="0" step="0.25" value={structuralWeights[key]} onChange={e => setStructuralWeight(key,e.target.value)} style={{display:"block",width:"100%",marginTop:4,padding:"6px 7px",border:"1px solid #cbd5e1",borderRadius:7}} />
+              </label>)}
+            </div>
+          </div>
+
+          {structuralStatus && <div style={{marginTop:12,fontSize:12,fontWeight:700,color:structuralStatus.startsWith("Analysis error")?"#b91c1c":"#475569"}}>{structuralStatus}</div>}
+
+          {structuralAnalysis && <StructuralAnalysisPanel analysis={structuralAnalysis} />}
+        </section>
+
         <section style={{...card,marginTop:18,background:"#f8fafc"}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
             <div>
@@ -593,6 +694,84 @@ function fmtNum(v,digits=2) {
 function fmtPct(v) {
   const n = Number(v);
   return Number.isFinite(n) ? `${fmtNum(100*n,2)}%` : "—";
+}
+
+function StructuralAnalysisPanel({analysis}) {
+  const entropy = analysis?.entropy || {};
+  const penalties = analysis?.penalties || {};
+  const score = analysis?.score || {};
+  const route = analysis?.routing_localization || {};
+  const fit = analysis?.resource_fit || {};
+  const balance = analysis?.balance || {};
+  const entropyRows = [
+    ["Work type","work_type"],
+    ["Routing / next activity","routing"],
+    ["Skill requirement","skill"],
+    ["Activity pattern","activity"],
+    ["Processing class","processing"]
+  ];
+  const finite = v => v !== null && v !== undefined && Number.isFinite(Number(v));
+  const pct = v => finite(v) ? `${fmtNum(100*Number(v),2)}%` : "N/A";
+  return <div style={{marginTop:16}}>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:10}}>
+      <Summary label="Decision-support score" value={finite(score.decision_support_score)?fmtNum(score.decision_support_score,2):"N/A"} />
+      <Summary label="Structural complexity" value={finite(score.weighted_structural_complexity)?fmtNum(score.weighted_structural_complexity,3):"N/A"} />
+      <Summary label="Cross-cell routing" value={pct(route.cross_cell_transition_fraction)} />
+      <Summary label="Skill coverage" value={pct(fit.skill_coverage_fraction)} />
+      <Summary label="Workload imbalance CV" value={fmtNum(balance.workload_cv,3)} />
+      <Summary label="Small cells" value={`${balance.small_cell_count ?? 0} / ${analysis.cell_count ?? 0}`} />
+    </div>
+
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(360px,1fr))",gap:14,marginTop:14}}>
+      <div style={{padding:14,border:"1px solid #e2e8f0",borderRadius:12,background:"#f8fafc"}}>
+        <div style={{fontWeight:800,fontSize:13}}>Conditional entropy by cell</div>
+        <div style={{fontSize:11,color:"#64748b",marginTop:4}}>Lower normalized conditional entropy means more of that variety is localized inside cells. N/A means the current model does not contain enough information for that dimension.</div>
+        <div style={{overflowX:"auto",marginTop:8}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+            <thead><tr><th align="left" style={{padding:"6px 4px",borderBottom:"1px solid #e2e8f0"}}>Dimension</th><th align="right" style={{padding:"6px 4px",borderBottom:"1px solid #e2e8f0"}}>H global</th><th align="right" style={{padding:"6px 4px",borderBottom:"1px solid #e2e8f0"}}>H | Cell</th><th align="right" style={{padding:"6px 4px",borderBottom:"1px solid #e2e8f0"}}>Reduction</th></tr></thead>
+            <tbody>{entropyRows.map(([label,key]) => { const x=entropy[key] || {}; return <tr key={key}>
+              <td style={{padding:"6px 4px",borderBottom:"1px solid #f1f5f9",fontWeight:700}}>{label}</td>
+              <td align="right" style={{padding:"6px 4px",borderBottom:"1px solid #f1f5f9"}}>{finite(x.global_entropy_bits)?fmtNum(x.global_entropy_bits,3):"N/A"}</td>
+              <td align="right" style={{padding:"6px 4px",borderBottom:"1px solid #f1f5f9"}}>{finite(x.conditional_entropy_bits)?fmtNum(x.conditional_entropy_bits,3):"N/A"}</td>
+              <td align="right" style={{padding:"6px 4px",borderBottom:"1px solid #f1f5f9",fontWeight:800}}>{pct(x.entropy_reduction_fraction)}</td>
+            </tr>; })}</tbody>
+          </table>
+        </div>
+      </div>
+
+      <div style={{padding:14,border:"1px solid #e2e8f0",borderRadius:12,background:"#f8fafc"}}>
+        <div style={{fontWeight:800,fontSize:13}}>Structural penalties / tradeoffs</div>
+        <div style={{fontSize:11,color:"#64748b",marginTop:4}}>These prevent a low-entropy design from being treated as automatically good. Values are normalized proxies from 0 to 1.</div>
+        <div style={{display:"grid",gap:7,marginTop:10}}>
+          {[
+            ["Fragmentation",penalties.fragmentation_penalty],
+            ["Capacity imbalance",penalties.capacity_imbalance_penalty],
+            ["Scarce-skill duplication",penalties.skill_duplication_penalty],
+            ["Pooling loss",penalties.pooling_loss_penalty],
+            ["Expected overflow pressure",penalties.overflow_pressure_penalty]
+          ].map(([label,value]) => <div key={label} style={{display:"flex",justifyContent:"space-between",gap:12,padding:"6px 8px",border:"1px solid #e2e8f0",borderRadius:8,background:"#fff",fontSize:12}}><span>{label}</span><b>{fmtNum(value,3)}</b></div>)}
+        </div>
+      </div>
+    </div>
+
+    {Array.isArray(balance.cells) && balance.cells.length > 0 && <div style={{marginTop:14,overflowX:"auto"}}>
+      <div style={{fontWeight:800,fontSize:13,marginBottom:6}}>Cell load / capacity structure</div>
+      <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,minWidth:720}}>
+        <thead><tr><th align="left" style={{padding:"6px 4px",borderBottom:"1px solid #e2e8f0"}}>Cell</th><th align="right" style={{padding:"6px 4px",borderBottom:"1px solid #e2e8f0"}}>Activities</th><th align="right" style={{padding:"6px 4px",borderBottom:"1px solid #e2e8f0"}}>Expected service demand min/hr</th><th align="right" style={{padding:"6px 4px",borderBottom:"1px solid #e2e8f0"}}>Assigned capacity min/hr</th><th align="right" style={{padding:"6px 4px",borderBottom:"1px solid #e2e8f0"}}>Structural utilization proxy</th></tr></thead>
+        <tbody>{balance.cells.map(c => <tr key={c.cell_id}>
+          <td style={{padding:"6px 4px",borderBottom:"1px solid #f1f5f9",fontWeight:700}}>{c.cell_name || c.cell_id}</td>
+          <td align="right" style={{padding:"6px 4px",borderBottom:"1px solid #f1f5f9"}}>{c.activity_count}</td>
+          <td align="right" style={{padding:"6px 4px",borderBottom:"1px solid #f1f5f9"}}>{fmtNum(c.expected_service_demand_minutes_per_hour,2)}</td>
+          <td align="right" style={{padding:"6px 4px",borderBottom:"1px solid #f1f5f9"}}>{fmtNum(c.assigned_capacity_minutes_per_hour,2)}</td>
+          <td align="right" style={{padding:"6px 4px",borderBottom:"1px solid #f1f5f9",fontWeight:800}}>{pct(c.structural_utilization_proxy)}</td>
+        </tr>)}</tbody>
+      </table>
+    </div>}
+
+    {Array.isArray(analysis.notes) && analysis.notes.length > 0 && <div style={{marginTop:12,padding:"10px 12px",border:"1px solid #dbeafe",background:"#eff6ff",borderRadius:10,fontSize:11,color:"#1e3a8a",lineHeight:1.55}}>
+      {analysis.notes.map((n,i) => <div key={i}>{i+1}. {n}</div>)}
+    </div>}
+  </div>;
 }
 
 function ComparisonTable({experiment}) {
