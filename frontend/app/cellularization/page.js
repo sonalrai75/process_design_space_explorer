@@ -649,6 +649,14 @@ export default function CellularizationPage() {
           </div>
         </section>}
 
+        {structuralAnalysis && phase2Experiment && <section id="structure-performance-interpretation" style={{...card,marginTop:18}}>
+          <h2 style={{marginTop:0}}>Structure ↔ performance interpretation</h2>
+          <div style={{fontSize:12,color:"#64748b",lineHeight:1.55,marginBottom:14}}>
+            Connects structural coherence with the paired simulation results. These statements describe patterns in the current model; they do not treat the structural score as an operational optimum or claim causality.
+          </div>
+          <StructurePerformanceInterpretation analysis={structuralAnalysis} experiment={phase2Experiment} />
+        </section>}
+
         {phase3Experiment && <section id="phase3-results" style={{...card,marginTop:18}}>
           <h2 style={{marginTop:0}}>Phase 3 scheduling-policy matrix</h2>
           <div style={{fontSize:12,color:"#64748b",marginBottom:12,lineHeight:1.55}}>
@@ -772,6 +780,143 @@ function StructuralAnalysisPanel({analysis}) {
       {analysis.notes.map((n,i) => <div key={i}>{i+1}. {n}</div>)}
     </div>}
   </div>;
+}
+
+
+function StructurePerformanceInterpretation({analysis,experiment}) {
+  const g = experiment?.global?.metrics || {};
+  const n = experiment?.cellular_no_overflow?.metrics || {};
+  const c = experiment?.cellular_controlled_overflow?.metrics || {};
+  const route = analysis?.routing_localization || {};
+  const balance = analysis?.balance || {};
+  const fit = analysis?.resource_fit || {};
+  const penalties = analysis?.penalties || {};
+  const entropy = analysis?.entropy || {};
+
+  const finite = v => Number.isFinite(Number(v));
+  const rel = (a,b) => finite(a) && finite(b) && Number(b) !== 0 ? (Number(a)-Number(b))/Math.abs(Number(b)) : null;
+  const reduction = (from,to) => finite(from) && finite(to) && Number(from) !== 0 ? (Number(from)-Number(to))/Math.abs(Number(from)) : null;
+  const pp = (a,b) => finite(a) && finite(b) ? Number(a)-Number(b) : null;
+
+  const cross = Number(route.cross_cell_transition_fraction);
+  const cv = Number(balance.workload_cv);
+  const coverage = Number(fit.skill_coverage_fraction);
+  const poolingLoss = Number(penalties.pooling_loss_penalty);
+  const overflowShare = Number(experiment?.overflow?.mean_fraction);
+
+  const controlledVsGlobalThroughput = rel(c.throughput_per_hour,g.throughput_per_hour);
+  const controlledVsGlobalCycle = reduction(g.mean_cycle_minutes,c.mean_cycle_minutes);
+  const controlledVsGlobalP95 = reduction(g.p95_cycle_minutes,c.p95_cycle_minutes);
+  const controlledVsGlobalWip = reduction(g.avg_wip,c.avg_wip);
+  const controlledVsGlobalBacklog = reduction(g.backlog_growth_per_hour,c.backlog_growth_per_hour);
+  const controlledVsGlobalUtil = pp(c.max_resource_utilization,g.max_resource_utilization);
+  const controlledVsNoCycle = reduction(n.mean_cycle_minutes,c.mean_cycle_minutes);
+  const noVsGlobalCycle = reduction(g.mean_cycle_minutes,n.mean_cycle_minutes);
+  const noVsGlobalThroughput = rel(n.throughput_per_hour,g.throughput_per_hour);
+
+  const entropyReductions = ["routing","activity","processing","work_type","skill"]
+    .map(k => Number(entropy?.[k]?.entropy_reduction_fraction))
+    .filter(Number.isFinite);
+  const avgEntropyReduction = entropyReductions.length ? entropyReductions.reduce((a,b)=>a+b,0)/entropyReductions.length : null;
+
+  const strictCellsWorse = (finite(noVsGlobalCycle) && noVsGlobalCycle < -0.05) || (finite(noVsGlobalThroughput) && noVsGlobalThroughput < -0.05);
+  const controlledBeatsGlobal = (finite(controlledVsGlobalCycle) && controlledVsGlobalCycle > 0.05) && (finite(controlledVsGlobalThroughput) && controlledVsGlobalThroughput > 0);
+  const complementarity = strictCellsWorse && controlledBeatsGlobal;
+
+  const structuralSignals = [];
+  if (finite(cv)) structuralSignals.push(cv <= 0.10
+    ? `Workload is very well balanced across cells (CV ${fmtNum(cv,3)}).`
+    : cv <= 0.25
+      ? `Workload balance is moderate across cells (CV ${fmtNum(cv,3)}).`
+      : `Workload is materially imbalanced across cells (CV ${fmtNum(cv,3)}).`);
+  if (finite(coverage)) structuralSignals.push(coverage >= 0.95
+    ? `Skill coverage is effectively complete (${fmtPct(coverage)}).`
+    : `Skill coverage is incomplete (${fmtPct(coverage)}), which can constrain otherwise coherent cells.`);
+  if (finite(cross)) structuralSignals.push(cross >= 0.40
+    ? `Cross-cell routing is high (${fmtPct(cross)}), so the process topology is not strongly isolated by the current cell boundary.`
+    : cross >= 0.20
+      ? `Cross-cell routing is moderate (${fmtPct(cross)}).`
+      : `Cross-cell routing is relatively low (${fmtPct(cross)}), indicating strong routing localization.`);
+  if (finite(avgEntropyReduction)) structuralSignals.push(`Average entropy reduction across available structural dimensions is ${fmtPct(avgEntropyReduction)}.`);
+  if (finite(poolingLoss) && poolingLoss >= 0.75) structuralSignals.push(`The structural pooling-loss proxy is high (${fmtNum(poolingLoss,2)}), so strict cellularization gives up much of the original shared-capacity flexibility.`);
+
+  const operationalSignals = [];
+  if (finite(controlledVsGlobalThroughput)) operationalSignals.push(`Controlled overflow changes throughput versus global pooling by ${signedPct(controlledVsGlobalThroughput)}.`);
+  if (finite(controlledVsGlobalCycle)) operationalSignals.push(`Controlled overflow changes mean cycle time versus global pooling by ${signedReduction(controlledVsGlobalCycle)}.`);
+  if (finite(controlledVsGlobalP95)) operationalSignals.push(`P95 cycle time changes versus global pooling by ${signedReduction(controlledVsGlobalP95)}.`);
+  if (finite(controlledVsGlobalWip)) operationalSignals.push(`Average WIP changes versus global pooling by ${signedReduction(controlledVsGlobalWip)}.`);
+  if (finite(controlledVsGlobalBacklog)) operationalSignals.push(`Backlog growth changes versus global pooling by ${signedReduction(controlledVsGlobalBacklog)}.`);
+  if (finite(controlledVsGlobalUtil)) operationalSignals.push(`Maximum resource utilization moves by ${signedPp(controlledVsGlobalUtil)} versus global pooling.`);
+  if (finite(overflowShare)) operationalSignals.push(`The realized overflow share is ${fmtPct(overflowShare)}.`);
+
+  let headline = "Structure and simulation show a mixed tradeoff.";
+  let explanation = "The structural metrics and operational metrics should be read together rather than collapsed into one score.";
+  if (complementarity) {
+    headline = "Local structure and selective pooling appear complementary in this design.";
+    explanation = "Strict cells lose too much pooling and perform worse than global pooling, while controlled overflow recovers flexibility and then outperforms global pooling on the paired throughput/cycle-time test. That pattern is consistent with protected local capacity plus selective cross-cell sharing creating value beyond either extreme alone.";
+  } else if (controlledBeatsGlobal) {
+    headline = "Controlled overflow outperforms global pooling in the current paired simulation.";
+    explanation = "The current cell structure is operationally useful despite its structural penalties. This is evidence that a slightly less 'clean' structural design can perform better when it preserves the right local structure and uses overflow selectively.";
+  } else if (strictCellsWorse && finite(controlledVsNoCycle) && controlledVsNoCycle > 0.10) {
+    headline = "The cells need flexibility to recover from fragmentation.";
+    explanation = "Strict cellularization performs poorly, but controlled overflow recovers a substantial part of the lost performance. The main mechanism appears to be restoration of selective pooling rather than cell structure alone.";
+  }
+
+  const caveats = [];
+  if (finite(c.max_resource_utilization) && Number(c.max_resource_utilization) > 0.95) caveats.push(`Controlled overflow is running at ${fmtPct(c.max_resource_utilization)} maximum utilization, above the 95% screening level. Performance gains should therefore be checked for robustness under demand/capacity sensitivity.`);
+  if (finite(c.sla_attainment) && Number(c.sla_attainment) < 0.50) caveats.push(`SLA attainment remains low (${fmtPct(c.sla_attainment)}), so the operating structure may be better than the alternatives while the overall system is still capacity constrained.`);
+  if (!finite(entropy?.work_type?.entropy_reduction_fraction)) caveats.push("Work-type entropy is unavailable, so form-function alignment at the transaction-family level is not yet being measured directly.");
+  if (!finite(entropy?.skill?.entropy_reduction_fraction)) caveats.push("Skill entropy is unavailable, so skill-demand localization is not yet part of this interpretation.");
+
+  return <div>
+    <div style={{padding:"14px 16px",border:"1px solid #bbf7d0",background:"#f0fdf4",borderRadius:12,color:"#166534",lineHeight:1.55}}>
+      <div style={{fontWeight:900,fontSize:15}}>{headline}</div>
+      <div style={{fontSize:12,marginTop:5}}>{explanation}</div>
+    </div>
+
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(310px,1fr))",gap:14,marginTop:14}}>
+      <div style={{padding:14,border:"1px solid #e2e8f0",borderRadius:12,background:"#f8fafc"}}>
+        <div style={{fontWeight:800,fontSize:13}}>Structural evidence</div>
+        <div style={{display:"grid",gap:8,marginTop:10}}>{structuralSignals.map((x,i)=><div key={i} style={{fontSize:12,color:"#475569",lineHeight:1.5}}>• {x}</div>)}</div>
+      </div>
+      <div style={{padding:14,border:"1px solid #e2e8f0",borderRadius:12,background:"#f8fafc"}}>
+        <div style={{fontWeight:800,fontSize:13}}>Operational evidence</div>
+        <div style={{display:"grid",gap:8,marginTop:10}}>{operationalSignals.map((x,i)=><div key={i} style={{fontSize:12,color:"#475569",lineHeight:1.5}}>• {x}</div>)}</div>
+      </div>
+    </div>
+
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:10,marginTop:14}}>
+      <Summary label="Controlled vs global throughput" value={finite(controlledVsGlobalThroughput)?signedPct(controlledVsGlobalThroughput):"N/A"} />
+      <Summary label="Controlled vs global mean cycle" value={finite(controlledVsGlobalCycle)?signedReduction(controlledVsGlobalCycle):"N/A"} />
+      <Summary label="Controlled vs no-overflow mean cycle" value={finite(controlledVsNoCycle)?signedReduction(controlledVsNoCycle):"N/A"} />
+      <Summary label="Controlled max utilization" value={finite(c.max_resource_utilization)?fmtPct(c.max_resource_utilization):"N/A"} />
+    </div>
+
+    {caveats.length > 0 && <div style={{marginTop:14,padding:"11px 13px",border:"1px solid #fde68a",background:"#fffbeb",borderRadius:10,fontSize:11,color:"#92400e",lineHeight:1.55}}>
+      <b>Interpretation limits</b>
+      {caveats.map((x,i)=><div key={i} style={{marginTop:5}}>{i+1}. {x}</div>)}
+    </div>}
+  </div>;
+}
+
+function signedPct(v) {
+  const n=Number(v);
+  if (!Number.isFinite(n)) return "N/A";
+  return `${n>0?"+":""}${fmtNum(100*n,2)}%`;
+}
+
+function signedReduction(v) {
+  const n=Number(v);
+  if (!Number.isFinite(n)) return "N/A";
+  if (n > 0) return `${fmtNum(100*n,2)}% lower`;
+  if (n < 0) return `${fmtNum(100*Math.abs(n),2)}% higher`;
+  return "no change";
+}
+
+function signedPp(v) {
+  const n=Number(v);
+  if (!Number.isFinite(n)) return "N/A";
+  return `${n>0?"+":""}${fmtNum(100*n,2)} pp`;
 }
 
 function ComparisonTable({experiment}) {
