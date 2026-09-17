@@ -53,6 +53,9 @@ export default function CellularizationPage() {
   const [candidateSet,setCandidateSet] = useState(null);
   const [candidateStatus,setCandidateStatus] = useState("");
   const [candidateBusy,setCandidateBusy] = useState(false);
+  const [candidateEvaluation,setCandidateEvaluation] = useState(null);
+  const [candidateEvaluationStatus,setCandidateEvaluationStatus] = useState("");
+  const [candidateEvaluationBusy,setCandidateEvaluationBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -230,6 +233,8 @@ export default function CellularizationPage() {
   async function generateCandidateCells() {
     if (!model || !activeArchitecture) return;
     setCandidateSet(null);
+    setCandidateEvaluation(null);
+    setCandidateEvaluationStatus("");
     setCandidateBusy(true);
     setCandidateStatus("Generating structurally coherent 2-cell and 3-cell candidates...");
     try {
@@ -252,6 +257,39 @@ export default function CellularizationPage() {
       setCandidateStatus(`Candidate generation error: ${e.message || e}`);
     } finally {
       setCandidateBusy(false);
+    }
+  }
+
+  async function evaluateGeneratedCandidates() {
+    if (!model || !activeArchitecture || !candidateSet?.candidates?.length) return;
+    setCandidateEvaluation(null);
+    setCandidateEvaluationBusy(true);
+    setCandidateEvaluationStatus("Running paired simulation evaluation for all generated candidates...");
+    try {
+      const r = await fetch(`${API}/api/cellularization/evaluate-candidates`, {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          model,
+          architecture_id:activeArchitecture.id,
+          candidates:candidateSet.candidates,
+          weights:structuralWeights,
+          cases:600,
+          seed:1300,
+          replications:6,
+          local_wait_threshold_minutes:Number(overflowWaitThreshold) || 0,
+          max_overflow_fraction:Math.max(0,Math.min(1,(Number(maxOverflowPercent) || 0)/100))
+        })
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "Candidate evaluation failed");
+      setCandidateEvaluation(data);
+      setCandidateEvaluationStatus(`Evaluated ${data.candidate_count || 0} candidate design${Number(data.candidate_count || 0) === 1 ? "" : "s"} against the same global baseline.`);
+      setTimeout(() => document.getElementById("candidate-evaluation-matrix")?.scrollIntoView({behavior:"smooth",block:"start"}),50);
+    } catch (e) {
+      setCandidateEvaluationStatus(`Candidate evaluation error: ${e.message || e}`);
+    } finally {
+      setCandidateEvaluationBusy(false);
     }
   }
 
@@ -601,8 +639,27 @@ export default function CellularizationPage() {
           </div>
 
           {candidateStatus && <div style={{marginTop:12,fontSize:12,fontWeight:700,color:candidateStatus.startsWith("Candidate generation error")?"#b91c1c":"#475569"}}>{candidateStatus}</div>}
-          {candidateSet?.candidates?.length > 0 && <CandidateDesignsPanel candidateSet={candidateSet} model={model} onLoad={loadCandidateIntoEditor} />}
+          {candidateSet?.candidates?.length > 0 && <>
+            <CandidateDesignsPanel candidateSet={candidateSet} model={model} onLoad={loadCandidateIntoEditor} />
+            <div style={{marginTop:16,padding:"12px 14px",border:"1px solid #bfdbfe",background:"#eff6ff",borderRadius:10,display:"flex",justifyContent:"space-between",gap:12,alignItems:"center",flexWrap:"wrap"}}>
+              <div>
+                <div style={{fontSize:12,fontWeight:900,color:"#1d4ed8"}}>Stage 2 — evaluate generated candidates</div>
+                <div style={{fontSize:11,color:"#475569",marginTop:3,lineHeight:1.45}}>Runs every generated design as strict cells and as symmetric controlled overflow against one common global baseline. Uses 6 paired replications × 600 cases with the current overflow threshold and cap.</div>
+              </div>
+              <button onClick={evaluateGeneratedCandidates} disabled={candidateEvaluationBusy} style={{padding:"9px 12px",borderRadius:8,border:"1px solid #2563eb",background:candidateEvaluationBusy?"#cbd5e1":"#2563eb",color:"#fff",fontWeight:800,cursor:candidateEvaluationBusy?"default":"pointer"}}>
+                {candidateEvaluationBusy ? "Evaluating candidates..." : "Run Candidate Evaluation Matrix"}
+              </button>
+            </div>
+            {candidateEvaluationStatus && <div style={{marginTop:10,fontSize:12,fontWeight:700,color:candidateEvaluationStatus.startsWith("Candidate evaluation error")?"#b91c1c":"#475569"}}>{candidateEvaluationStatus}</div>}
+          </>}
         </section>
+
+        {candidateEvaluation?.candidates?.length > 0 && <section id="candidate-evaluation-matrix" style={{...card,marginTop:18}}>
+          <div style={{fontSize:11,fontWeight:800,color:"#1d4ed8",textTransform:"uppercase",letterSpacing:".06em"}}>Stage 2 simulation evaluation</div>
+          <h2 style={{margin:"4px 0 5px"}}>Candidate Evaluation Matrix</h2>
+          <div style={muted}>Structural coherence and operational performance are shown together. The matrix deliberately does not declare a winner.</div>
+          <CandidateEvaluationMatrix evaluation={candidateEvaluation} />
+        </section>}
 
         <section style={{...card,marginTop:18,background:"#f8fafc"}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
@@ -903,6 +960,58 @@ function CandidateDesignsPanel({candidateSet,model,onLoad}) {
       </div>
     </div>)}
     <div style={{marginTop:12,fontSize:11,color:"#64748b",lineHeight:1.5}}>These alternatives are not ranked as operational winners. Load any candidate into the editor, modify it if desired, then use the existing structural analysis and paired simulation experiments to evaluate it.</div>
+  </div>;
+}
+
+function CandidateEvaluationMatrix({evaluation}) {
+  const finite = v => v !== null && v !== undefined && Number.isFinite(Number(v));
+  const rows = evaluation?.candidates || [];
+  const metric = (row,scenario,key) => row?.[scenario]?.metrics?.[key];
+  const score = row => row?.structural_analysis?.score?.decision_support_score;
+  const cross = row => row?.structural_analysis?.routing_localization?.cross_cell_transition_fraction;
+  const cv = row => row?.structural_analysis?.balance?.workload_cv;
+
+  const columns = [
+    ["Structural score", row => finite(score(row)) ? fmtNum(score(row),2) : "N/A"],
+    ["Cross-cell routing", row => finite(cross(row)) ? fmtPct(cross(row)) : "N/A"],
+    ["Workload CV", row => finite(cv(row)) ? fmtNum(cv(row),3) : "N/A"],
+    ["No overflow throughput/hr", row => fmtNum(metric(row,"cellular_no_overflow","throughput_per_hour"),2)],
+    ["Controlled throughput/hr", row => fmtNum(metric(row,"cellular_controlled_overflow","throughput_per_hour"),2)],
+    ["Controlled mean cycle min", row => fmtNum(metric(row,"cellular_controlled_overflow","mean_cycle_minutes"),2)],
+    ["Controlled P95 cycle min", row => fmtNum(metric(row,"cellular_controlled_overflow","p95_cycle_minutes"),2)],
+    ["Controlled WIP", row => fmtNum(metric(row,"cellular_controlled_overflow","avg_wip"),2)],
+    ["Controlled SLA", row => fmtPct(metric(row,"cellular_controlled_overflow","sla_attainment"))],
+    ["Controlled max util", row => fmtPct(metric(row,"cellular_controlled_overflow","max_resource_utilization"))],
+    ["Controlled backlog/hr", row => fmtNum(metric(row,"cellular_controlled_overflow","backlog_growth_per_hour"),2)],
+    ["Overflow share", row => fmtPct(row?.overflow?.mean_fraction)],
+    ["Wait saved / overflow", row => `${fmtNum(row?.overflow?.mean_wait_saved_minutes,2)} min`]
+  ];
+
+  const g = evaluation?.global?.metrics || {};
+  return <div style={{marginTop:14}}>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(145px,1fr))",gap:8,marginBottom:12}}>
+      <Summary label="Global throughput/hr" value={fmtNum(g.throughput_per_hour,2)} />
+      <Summary label="Global mean cycle" value={`${fmtNum(g.mean_cycle_minutes,2)} min`} />
+      <Summary label="Global P95 cycle" value={`${fmtNum(g.p95_cycle_minutes,2)} min`} />
+      <Summary label="Global WIP" value={fmtNum(g.avg_wip,2)} />
+      <Summary label="Global max util" value={fmtPct(g.max_resource_utilization)} />
+    </div>
+    <div style={{overflowX:"auto"}}>
+      <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,minWidth:1500}}>
+        <thead><tr style={{background:"#f8fafc"}}>
+          <th style={th}>Candidate</th><th style={th}>Cells</th>
+          {columns.map(([label]) => <th key={label} style={th}>{label}</th>)}
+        </tr></thead>
+        <tbody>{rows.map(row => <tr key={row.id}>
+          <td style={td}><b>{row.profile_label || row.id}</b></td>
+          <td style={td}>{row.k}</td>
+          {columns.map(([label,fn]) => <td key={label} style={td}>{fn(row)}</td>)}
+        </tr>)}</tbody>
+      </table>
+    </div>
+    <div style={{marginTop:12,padding:"10px 12px",border:"1px solid #dbeafe",background:"#eff6ff",borderRadius:9,fontSize:11,color:"#1e3a8a",lineHeight:1.55}}>
+      {(evaluation?.notes || []).map((n,i) => <div key={i}>{i+1}. {n}</div>)}
+    </div>
   </div>;
 }
 

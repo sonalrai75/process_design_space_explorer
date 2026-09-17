@@ -15,6 +15,7 @@ from .core.cellularization import run_phase1_paired_comparison, run_phase2_paire
 from .core.scheduling import run_phase3_scheduling_matrix
 from .core.structural_analysis import analyze_cell_structure
 from .core.candidate_generation import generate_cell_candidates
+from .core.candidate_evaluation import evaluate_cell_candidates
 from .core.calibration import preview_event_log, calibrate_event_log
 from .core.contact_center_excel import (
     preview_contact_center_workbook,
@@ -137,6 +138,17 @@ class CellularizationCandidateGenerationRequest(BaseModel):
     architecture_id: str | None = None
     k_values: list[int] = [2, 3]
     weights: dict[str, float] = {}
+
+class CellularizationCandidateEvaluationRequest(BaseModel):
+    model: ProcessModel = DEMO_MODEL
+    architecture_id: str | None = None
+    candidates: list[dict] = []
+    weights: dict[str, float] = {}
+    cases: int = 600
+    seed: int = 1300
+    replications: int = 6
+    local_wait_threshold_minutes: float = 30.0
+    max_overflow_fraction: float = 1.0
 
 
 class CompareRequest(BaseModel):
@@ -428,6 +440,24 @@ def cellularization_candidate_generation_endpoint(req: CellularizationCandidateG
             architecture_id,
             k_values=req.k_values,
             structural_weights=req.weights,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/cellularization/evaluate-candidates")
+def cellularization_candidate_evaluation_endpoint(req: CellularizationCandidateEvaluationRequest):
+    try:
+        architecture_id = req.architecture_id or req.model.architectures[0].id
+        return evaluate_cell_candidates(
+            req.model,
+            architecture_id,
+            req.candidates,
+            structural_weights=req.weights,
+            cases=req.cases,
+            seed=req.seed,
+            replications=req.replications,
+            local_wait_threshold_minutes=req.local_wait_threshold_minutes,
+            max_overflow_fraction=req.max_overflow_fraction,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
