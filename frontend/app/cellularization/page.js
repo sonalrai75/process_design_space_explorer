@@ -74,6 +74,8 @@ export default function CellularizationPage() {
   const [autoCellularization,setAutoCellularization] = useState(null);
   const [autoCellularizationStatus,setAutoCellularizationStatus] = useState("");
   const [autoCellularizationBusy,setAutoCellularizationBusy] = useState(false);
+  const [savedDesigns,setSavedDesigns] = useState([]);
+  const [savedDesignName,setSavedDesignName] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -116,6 +118,16 @@ export default function CellularizationPage() {
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) setCells(parsed);
+      }
+    } catch (_) {}
+  }, []);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("pds_saved_cell_designs");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) setSavedDesigns(parsed);
       }
     } catch (_) {}
   }, []);
@@ -348,6 +360,56 @@ export default function CellularizationPage() {
     } finally {
       setAutoCellularizationBusy(false);
     }
+  }
+
+  function persistSavedDesigns(next) {
+    setSavedDesigns(next);
+    try { localStorage.setItem("pds_saved_cell_designs",JSON.stringify(next)); } catch (_) {}
+  }
+
+  function saveCandidateDesign(candidate) {
+    const sourceName = candidate?.profile_label || candidate?.id || "Generated design";
+    const snapshot = {
+      id:`saved_${Date.now()}_${Math.random().toString(36).slice(2,8)}`,
+      name:`${sourceName}${candidate?.k ? ` (${candidate.k} cells)` : ""}`,
+      source:"generated",
+      source_candidate_id:candidate?.id || null,
+      created_at:new Date().toISOString(),
+      cells:JSON.parse(JSON.stringify(candidate?.cells || []))
+    };
+    persistSavedDesigns([snapshot,...savedDesigns]);
+    setCellStatus(`Saved "${snapshot.name}" to the design workspace. Loading another candidate will not overwrite this snapshot.`);
+  }
+
+  function saveCurrentDesignSnapshot() {
+    if (!cells.length) {
+      setCellStatus("Nothing to save: define or load a cell design first.");
+      return;
+    }
+    const name = savedDesignName.trim() || `Cell design ${savedDesigns.length + 1}`;
+    const snapshot = {
+      id:`saved_${Date.now()}_${Math.random().toString(36).slice(2,8)}`,
+      name,
+      source:"editor",
+      created_at:new Date().toISOString(),
+      cells:JSON.parse(JSON.stringify(cells))
+    };
+    persistSavedDesigns([snapshot,...savedDesigns]);
+    setSavedDesignName("");
+    setCellStatus(`Saved "${name}" to the design workspace.`);
+  }
+
+  function loadSavedDesign(saved, enableOverflow=false) {
+    loadCandidateIntoEditor({
+      id:saved?.id,
+      profile_label:saved?.name || "Saved design",
+      k:(saved?.cells || []).length,
+      cells:JSON.parse(JSON.stringify(saved?.cells || []))
+    },enableOverflow);
+  }
+
+  function deleteSavedDesign(id) {
+    persistSavedDesigns(savedDesigns.filter(d => d.id !== id));
   }
 
   function loadCandidateIntoEditor(candidate, enableOverflow=false) {
@@ -700,8 +762,29 @@ export default function CellularizationPage() {
           <div style={{fontSize:11,fontWeight:900,color:"#047857",textTransform:"uppercase",letterSpacing:".06em"}}>Automated cellularization results</div>
           <h2 style={{margin:"4px 0 5px"}}>Pareto alternatives</h2>
           <div style={muted}>Only tradeoffs are highlighted. Structural coherence is kept separate from simulation performance, and utilization/skill guardrails are reported explicitly.</div>
-          <AutomatedCellularizationPanel result={autoCellularization} onLoad={c => loadCandidateIntoEditor(c,true)} />
+          <AutomatedCellularizationPanel
+            result={autoCellularization}
+            onLoad={c => loadCandidateIntoEditor(c,false)}
+            onLoadOverflow={c => loadCandidateIntoEditor(c,true)}
+            onSave={saveCandidateDesign}
+          />
         </section>}
+
+        <section style={{...card,marginTop:18,border:"1px solid #cbd5e1"}}>
+          <div style={{fontSize:11,fontWeight:900,color:"#475569",textTransform:"uppercase",letterSpacing:".06em"}}>Design workspace</div>
+          <h2 style={{margin:"4px 0 5px"}}>Saved Cell Designs</h2>
+          <div style={muted}>Save generated alternatives or edited designs as independent snapshots. Loading another design changes the editor only; saved snapshots remain available for later analysis.</div>
+          <SavedCellDesignsPanel
+            designs={savedDesigns}
+            currentName={savedDesignName}
+            onNameChange={setSavedDesignName}
+            onSaveCurrent={saveCurrentDesignSnapshot}
+            onLoad={d => loadSavedDesign(d,false)}
+            onLoadOverflow={d => loadSavedDesign(d,true)}
+            onDelete={deleteSavedDesign}
+            hasCurrent={cells.length > 0}
+          />
+        </section>
 
         <section id="candidate-cell-designs" style={{...card,marginTop:18}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
@@ -725,7 +808,13 @@ export default function CellularizationPage() {
 
           {candidateStatus && <div style={{marginTop:12,fontSize:12,fontWeight:700,color:candidateStatus.startsWith("Candidate generation error")?"#b91c1c":"#475569"}}>{candidateStatus}</div>}
           {candidateSet?.candidates?.length > 0 && <>
-            <CandidateDesignsPanel candidateSet={candidateSet} model={model} onLoad={loadCandidateIntoEditor} />
+            <CandidateDesignsPanel
+              candidateSet={candidateSet}
+              model={model}
+              onLoad={c => loadCandidateIntoEditor(c,false)}
+              onLoadOverflow={c => loadCandidateIntoEditor(c,true)}
+              onSave={saveCandidateDesign}
+            />
             <div style={{marginTop:16,padding:"12px 14px",border:"1px solid #bfdbfe",background:"#eff6ff",borderRadius:10,display:"flex",justifyContent:"space-between",gap:12,alignItems:"center",flexWrap:"wrap"}}>
               <div>
                 <div style={{fontSize:12,fontWeight:900,color:"#1d4ed8"}}>Stage 2 — evaluate generated candidates</div>
@@ -997,7 +1086,53 @@ function StructuralAnalysisPanel({analysis}) {
 }
 
 
-function CandidateDesignsPanel({candidateSet,model,onLoad}) {
+function SavedCellDesignsPanel({designs,currentName,onNameChange,onSaveCurrent,onLoad,onLoadOverflow,onDelete,hasCurrent}) {
+  const formatDate = value => {
+    if (!value) return "";
+    try { return new Date(value).toLocaleString(); } catch (_) { return ""; }
+  };
+  return <div style={{marginTop:14}}>
+    <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+      <input
+        type="text"
+        value={currentName}
+        onChange={e => onNameChange(e.target.value)}
+        placeholder="Name current design (optional)"
+        style={{minWidth:260,flex:"1 1 260px",padding:"9px 10px",border:"1px solid #cbd5e1",borderRadius:8}}
+      />
+      <button
+        onClick={onSaveCurrent}
+        disabled={!hasCurrent}
+        style={{padding:"9px 12px",borderRadius:8,border:"1px solid #475569",background:hasCurrent?"#475569":"#cbd5e1",color:"#fff",fontWeight:800,cursor:hasCurrent?"pointer":"default"}}
+      >
+        Save current editor design
+      </button>
+    </div>
+    {designs.length === 0 ? <div style={{marginTop:12,fontSize:12,color:"#64748b"}}>No saved designs yet. Use <b>Save</b> beside any generated candidate, or save the current edited design above.</div> :
+      <div style={{marginTop:12,overflowX:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,minWidth:760}}>
+          <thead><tr style={{background:"#f8fafc"}}>
+            {["Saved design","Source","Cells","Saved","Actions"].map(h => <th key={h} style={th}>{h}</th>)}
+          </tr></thead>
+          <tbody>{designs.map(d => <tr key={d.id}>
+            <td style={td}><b>{d.name}</b>{d.source_candidate_id && <div style={{fontSize:9,color:"#64748b",marginTop:2}}>{d.source_candidate_id}</div>}</td>
+            <td style={td}>{d.source === "generated" ? "Generated candidate" : "Editor snapshot"}</td>
+            <td style={td}>{(d.cells || []).length}</td>
+            <td style={td}>{formatDate(d.created_at)}</td>
+            <td style={td}><div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+              <button onClick={() => onLoad(d)} style={{padding:"6px 8px",borderRadius:7,border:"1px solid #7c3aed",background:"#fff",color:"#6d28d9",fontWeight:800,cursor:"pointer"}}>Load</button>
+              <button onClick={() => onLoadOverflow(d)} style={{padding:"6px 8px",borderRadius:7,border:"1px solid #059669",background:"#fff",color:"#047857",fontWeight:800,cursor:"pointer"}}>Load + overflow</button>
+              <button onClick={() => onDelete(d.id)} style={{padding:"6px 8px",borderRadius:7,border:"1px solid #dc2626",background:"#fff",color:"#b91c1c",fontWeight:800,cursor:"pointer"}}>Delete</button>
+            </div></td>
+          </tr>)}</tbody>
+        </table>
+      </div>}
+    <div style={{marginTop:10,fontSize:11,color:"#64748b",lineHeight:1.5}}>Saved designs are stored locally in this browser. Loading a design creates a fresh editable copy, so later edits do not alter the saved snapshot unless you save another snapshot.</div>
+  </div>;
+}
+
+
+function CandidateDesignsPanel({candidateSet,model,onLoad,onLoadOverflow,onSave}) {
   const finite = v => v !== null && v !== undefined && Number.isFinite(Number(v));
   const candidates = candidateSet?.candidates || [];
   const byK = [...new Set(candidates.map(c => c.k))].sort((a,b) => a-b);
@@ -1020,7 +1155,11 @@ function CandidateDesignsPanel({candidateSet,model,onLoad}) {
                 <div style={{fontSize:11,fontWeight:900,color:"#7c3aed",textTransform:"uppercase"}}>{c.profile_label}</div>
                 <div style={{fontSize:18,fontWeight:900,marginTop:3}}>{k} cells</div>
               </div>
-              <button onClick={() => onLoad(c)} style={{padding:"7px 9px",borderRadius:7,border:"1px solid #7c3aed",background:"#fff",color:"#6d28d9",fontWeight:800,cursor:"pointer"}}>Load into editor</button>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap",justifyContent:"flex-end"}}>
+                <button onClick={() => onLoad(c)} style={{padding:"7px 9px",borderRadius:7,border:"1px solid #7c3aed",background:"#fff",color:"#6d28d9",fontWeight:800,cursor:"pointer"}}>Load</button>
+                <button onClick={() => onLoadOverflow(c)} style={{padding:"7px 9px",borderRadius:7,border:"1px solid #059669",background:"#fff",color:"#047857",fontWeight:800,cursor:"pointer"}}>Load + overflow</button>
+                <button onClick={() => onSave(c)} style={{padding:"7px 9px",borderRadius:7,border:"1px solid #64748b",background:"#fff",color:"#334155",fontWeight:800,cursor:"pointer"}}>Save design</button>
+              </div>
             </div>
 
             <div style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:7,marginTop:10}}>
@@ -1048,7 +1187,7 @@ function CandidateDesignsPanel({candidateSet,model,onLoad}) {
   </div>;
 }
 
-function AutomatedCellularizationPanel({result,onLoad}) {
+function AutomatedCellularizationPanel({result,onLoad,onLoadOverflow,onSave}) {
   const finite = v => v !== null && v !== undefined && Number.isFinite(Number(v));
   const rows = result?.candidates || [];
   const frontierIds = new Set(result?.pareto_candidate_ids || []);
@@ -1082,7 +1221,11 @@ function AutomatedCellularizationPanel({result,onLoad}) {
             <td style={td}>{finite(score)?fmtNum(score,2):"N/A"}</td>
             <td style={td}>{finite(cross)?fmtPct(cross):"N/A"}</td>
             <td style={td}>{finite(cv)?fmtNum(cv,3):"N/A"}</td>
-            <td style={td}><button onClick={() => onLoad(row)} style={{padding:"6px 8px",borderRadius:7,border:"1px solid #059669",background:"#fff",color:"#047857",fontWeight:800,cursor:"pointer"}}>Load + enable overflow</button></td>
+            <td style={td}><div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+              <button onClick={() => onLoad(row)} style={{padding:"6px 8px",borderRadius:7,border:"1px solid #7c3aed",background:"#fff",color:"#6d28d9",fontWeight:800,cursor:"pointer"}}>Load</button>
+              <button onClick={() => onLoadOverflow(row)} style={{padding:"6px 8px",borderRadius:7,border:"1px solid #059669",background:"#fff",color:"#047857",fontWeight:800,cursor:"pointer"}}>Load + overflow</button>
+              <button onClick={() => onSave(row)} style={{padding:"6px 8px",borderRadius:7,border:"1px solid #64748b",background:"#fff",color:"#334155",fontWeight:800,cursor:"pointer"}}>Save</button>
+            </div></td>
           </tr>;
         })}</tbody>
       </table></div>
@@ -1114,7 +1257,11 @@ function AutomatedCellularizationPanel({result,onLoad}) {
       <td style={td}>{fmtNum(metric(row,"backlog_growth_per_hour"),2)}</td>
       <td style={td}>{fmtPct(row?.overflow?.mean_fraction)}</td>
       <td style={td}><span style={{fontWeight:900,color:row.capacity_guardrail_met?"#166534":"#b45309"}}>{row.capacity_guardrail_met?"≤95%":"Above 95%"}</span></td>
-      <td style={td}><button onClick={() => onLoad(row)} style={{padding:"6px 8px",borderRadius:7,border:"1px solid #059669",background:"#fff",color:"#047857",fontWeight:800,cursor:"pointer"}}>Load + enable overflow</button></td>
+      <td style={td}><div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+        <button onClick={() => onLoad(row)} style={{padding:"6px 8px",borderRadius:7,border:"1px solid #7c3aed",background:"#fff",color:"#6d28d9",fontWeight:800,cursor:"pointer"}}>Load</button>
+        <button onClick={() => onLoadOverflow(row)} style={{padding:"6px 8px",borderRadius:7,border:"1px solid #059669",background:"#fff",color:"#047857",fontWeight:800,cursor:"pointer"}}>Load + overflow</button>
+        <button onClick={() => onSave(row)} style={{padding:"6px 8px",borderRadius:7,border:"1px solid #64748b",background:"#fff",color:"#334155",fontWeight:800,cursor:"pointer"}}>Save</button>
+      </div></td>
     </tr>;
   };
   return <div style={{marginTop:14}}>
