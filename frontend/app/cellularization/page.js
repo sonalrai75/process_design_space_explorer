@@ -14,6 +14,21 @@ const card = {
 
 const muted = {color:"#64748b",lineHeight:1.5};
 
+const th = {
+  textAlign:"left",
+  padding:"8px 6px",
+  borderBottom:"1px solid #e2e8f0",
+  whiteSpace:"nowrap",
+  fontWeight:900
+};
+
+const td = {
+  padding:"8px 6px",
+  borderBottom:"1px solid #f1f5f9",
+  verticalAlign:"top",
+  whiteSpace:"nowrap"
+};
+
 const DEFAULT_STRUCTURAL_WEIGHTS = {
   work_type_entropy:1,
   routing_entropy:1,
