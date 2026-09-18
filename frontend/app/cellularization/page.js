@@ -56,6 +56,9 @@ export default function CellularizationPage() {
   const [candidateEvaluation,setCandidateEvaluation] = useState(null);
   const [candidateEvaluationStatus,setCandidateEvaluationStatus] = useState("");
   const [candidateEvaluationBusy,setCandidateEvaluationBusy] = useState(false);
+  const [autoCellularization,setAutoCellularization] = useState(null);
+  const [autoCellularizationStatus,setAutoCellularizationStatus] = useState("");
+  const [autoCellularizationBusy,setAutoCellularizationBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -293,12 +296,46 @@ export default function CellularizationPage() {
     }
   }
 
-  function loadCandidateIntoEditor(candidate) {
+  async function runAutomatedCellularization() {
+    if (!model || !activeArchitecture || enabledActivities.length < 2) return;
+    setAutoCellularization(null);
+    setAutoCellularizationBusy(true);
+    setAutoCellularizationStatus("Generating candidate cell structures and running paired simulation evaluation...");
+    try {
+      const r = await fetch(`${API}/api/cellularization/automated`, {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          model,
+          architecture_id:activeArchitecture.id,
+          k_values:[],
+          weights:structuralWeights,
+          cases:400,
+          seed:1700,
+          replications:4,
+          local_wait_threshold_minutes:Number(overflowWaitThreshold) || 0,
+          max_overflow_fraction:Math.max(0,Math.min(1,(Number(maxOverflowPercent) || 0)/100)),
+          utilization_ceiling:0.95
+        })
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.detail || "Automated cellularization failed");
+      setAutoCellularization(data);
+      setAutoCellularizationStatus(`Evaluated ${data.candidate_count || 0} generated designs across cell counts ${(data.k_values || []).join(", ")}. ${data.pareto_count || 0} are on the generated Pareto frontier.`);
+      setTimeout(() => document.getElementById("automated-cellularization-results")?.scrollIntoView({behavior:"smooth",block:"start"}),50);
+    } catch (e) {
+      setAutoCellularizationStatus(`Automated cellularization error: ${e.message || e}`);
+    } finally {
+      setAutoCellularizationBusy(false);
+    }
+  }
+
+  function loadCandidateIntoEditor(candidate, enableOverflow=false) {
     const loaded = (candidate?.cells || []).map((c,idx) => ({
       ...c,
       id:`cell_${Date.now()}_${idx+1}`,
       name:c.name || `Cell ${idx+1}`,
-      cross_cell_eligible:false
+      cross_cell_eligible:enableOverflow ? true : Boolean(c.cross_cell_eligible)
     }));
     setCells(loaded);
     setStructuralAnalysis(null);
@@ -306,7 +343,7 @@ export default function CellularizationPage() {
     setExperiment(null);
     setPhase3Experiment(null);
     setSensitivityResults(null);
-    setCellStatus(`Loaded ${candidate.profile_label || candidate.id} (${candidate.k} cells) into the editable design. Review it, adjust if needed, then Save cell design before running experiments.`);
+    setCellStatus(`Loaded ${candidate.profile_label || candidate.id} (${candidate.k} cells) into the editable design${enableOverflow ? " with two-way controlled-overflow reception enabled" : ""}. Review it, adjust if needed, then Save cell design before running experiments.`);
     setTimeout(() => document.getElementById("manual-cell-design")?.scrollIntoView({behavior:"smooth",block:"start"}),50);
   }
 
@@ -617,6 +654,34 @@ export default function CellularizationPage() {
 
           {structuralAnalysis && <StructuralAnalysisPanel analysis={structuralAnalysis} />}
         </section>
+
+        <section style={{...card,marginTop:18,border:"1px solid #a7f3d0",background:"#f0fdf4"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+            <div style={{maxWidth:850}}>
+              <div style={{fontSize:11,fontWeight:900,color:"#047857",textTransform:"uppercase",letterSpacing:".06em"}}>Automated cellularization — decision support</div>
+              <h2 style={{margin:"4px 0 5px"}}>Generate, simulate, and expose the tradeoff frontier</h2>
+              <div style={muted}>Automatically explores several cell counts, generates structurally coherent alternatives, evaluates strict cells and controlled overflow with common random numbers, and returns a Pareto set. It does not silently change your operating model or declare a unique optimum.</div>
+            </div>
+            <button
+              onClick={runAutomatedCellularization}
+              disabled={!model || !activeArchitecture || enabledActivities.length < 2 || autoCellularizationBusy}
+              style={{padding:"11px 15px",borderRadius:9,border:"1px solid #059669",background:(!autoCellularizationBusy && enabledActivities.length >= 2)?"#059669":"#cbd5e1",color:"#fff",fontWeight:900,cursor:(!autoCellularizationBusy && enabledActivities.length >= 2)?"pointer":"default"}}
+            >
+              {autoCellularizationBusy ? "Running automated cellularization..." : "Run Automated Cellularization"}
+            </button>
+          </div>
+          <div style={{marginTop:12,padding:"10px 12px",border:"1px solid #bbf7d0",background:"#ecfdf5",borderRadius:9,fontSize:12,color:"#065f46",lineHeight:1.55}}>
+            The default search range scales with process size up to 6 cells. This first automated version uses 4 paired replications × 400 cases per candidate, the current overflow trigger/cap, and a 95% maximum-utilization guardrail. Generated candidates remain fully editable.
+          </div>
+          {autoCellularizationStatus && <div style={{marginTop:12,fontSize:12,fontWeight:800,color:autoCellularizationStatus.startsWith("Automated cellularization error")?"#b91c1c":"#166534"}}>{autoCellularizationStatus}</div>}
+        </section>
+
+        {autoCellularization?.candidates?.length > 0 && <section id="automated-cellularization-results" style={{...card,marginTop:18}}>
+          <div style={{fontSize:11,fontWeight:900,color:"#047857",textTransform:"uppercase",letterSpacing:".06em"}}>Automated cellularization results</div>
+          <h2 style={{margin:"4px 0 5px"}}>Pareto alternatives</h2>
+          <div style={muted}>Only tradeoffs are highlighted. Structural coherence is kept separate from simulation performance, and utilization/skill guardrails are reported explicitly.</div>
+          <AutomatedCellularizationPanel result={autoCellularization} onLoad={c => loadCandidateIntoEditor(c,true)} />
+        </section>}
 
         <section id="candidate-cell-designs" style={{...card,marginTop:18}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
@@ -960,6 +1025,77 @@ function CandidateDesignsPanel({candidateSet,model,onLoad}) {
       </div>
     </div>)}
     <div style={{marginTop:12,fontSize:11,color:"#64748b",lineHeight:1.5}}>These alternatives are not ranked as operational winners. Load any candidate into the editor, modify it if desired, then use the existing structural analysis and paired simulation experiments to evaluate it.</div>
+  </div>;
+}
+
+function AutomatedCellularizationPanel({result,onLoad}) {
+  const finite = v => v !== null && v !== undefined && Number.isFinite(Number(v));
+  const rows = result?.candidates || [];
+  const frontierIds = new Set(result?.pareto_candidate_ids || []);
+  const labels = result?.tradeoff_labels || [];
+  const labelById = {};
+  for (const x of labels) {
+    if (!labelById[x.candidate_id]) labelById[x.candidate_id] = [];
+    labelById[x.candidate_id].push(x);
+  }
+  const metric = (row,key) => row?.cellular_controlled_overflow?.metrics?.[key];
+  const frontier = rows.filter(r => frontierIds.has(r.id));
+  const dominated = rows.filter(r => !frontierIds.has(r.id));
+  const renderRow = row => {
+    const score = row?.structural_analysis?.score?.decision_support_score;
+    const cross = row?.structural_analysis?.routing_localization?.cross_cell_transition_fraction;
+    const cv = row?.structural_analysis?.balance?.workload_cv;
+    const tags = labelById[row.id] || [];
+    return <tr key={row.id} style={{background:frontierIds.has(row.id)?"#f0fdf4":"#fff"}}>
+      <td style={td}>
+        <div style={{fontWeight:900}}>{row.profile_label || row.id}</div>
+        {tags.map(t => <div key={t.role} style={{marginTop:4,display:"inline-block",marginRight:4,padding:"2px 6px",borderRadius:999,background:"#dcfce7",color:"#166534",fontSize:9,fontWeight:900}}>{t.label}</div>)}
+      </td>
+      <td style={td}>{row.k}</td>
+      <td style={td}>{finite(score)?fmtNum(score,2):"N/A"}</td>
+      <td style={td}>{finite(cross)?fmtPct(cross):"N/A"}</td>
+      <td style={td}>{finite(cv)?fmtNum(cv,3):"N/A"}</td>
+      <td style={td}>{fmtNum(metric(row,"throughput_per_hour"),2)}</td>
+      <td style={td}>{fmtNum(metric(row,"mean_cycle_minutes"),2)}</td>
+      <td style={td}>{fmtNum(metric(row,"p95_cycle_minutes"),2)}</td>
+      <td style={td}>{fmtNum(metric(row,"avg_wip"),2)}</td>
+      <td style={td}>{fmtPct(metric(row,"sla_attainment"))}</td>
+      <td style={td}>{fmtPct(metric(row,"max_resource_utilization"))}</td>
+      <td style={td}>{fmtNum(metric(row,"backlog_growth_per_hour"),2)}</td>
+      <td style={td}>{fmtPct(row?.overflow?.mean_fraction)}</td>
+      <td style={td}><span style={{fontWeight:900,color:row.capacity_guardrail_met?"#166534":"#b45309"}}>{row.capacity_guardrail_met?"≤95%":"Above 95%"}</span></td>
+      <td style={td}><button onClick={() => onLoad(row)} style={{padding:"6px 8px",borderRadius:7,border:"1px solid #059669",background:"#fff",color:"#047857",fontWeight:800,cursor:"pointer"}}>Load + enable overflow</button></td>
+    </tr>;
+  };
+  return <div style={{marginTop:14}}>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:8,marginBottom:12}}>
+      <Summary label="Candidates evaluated" value={result?.candidate_count ?? rows.length} />
+      <Summary label="Pareto alternatives" value={result?.pareto_count ?? frontier.length} />
+      <Summary label="Cell counts explored" value={(result?.k_values || []).join(", ") || "N/A"} />
+      <Summary label="Paired replications" value={result?.replications ?? "N/A"} />
+      <Summary label="Cases / replication" value={result?.cases_per_replication ?? "N/A"} />
+    </div>
+    {labels.length > 0 && <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(240px,1fr))",gap:8,marginBottom:14}}>
+      {labels.map(x => {
+        const c = rows.find(r => r.id === x.candidate_id);
+        return <div key={x.role} style={{padding:"10px 12px",border:"1px solid #bbf7d0",borderRadius:9,background:"#f0fdf4"}}>
+          <div style={{fontSize:11,fontWeight:900,color:"#166534"}}>{x.label}</div>
+          <div style={{fontSize:13,fontWeight:900,marginTop:3}}>{c?.profile_label || x.candidate_id} · {c?.k || "?"} cells</div>
+          <div style={{fontSize:10,color:"#475569",marginTop:4,lineHeight:1.45}}>{x.explanation}</div>
+        </div>;
+      })}
+    </div>}
+    <div style={{fontSize:12,fontWeight:900,marginBottom:6}}>Pareto set</div>
+    <div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:10,minWidth:1600}}>
+      <thead><tr style={{background:"#f8fafc"}}>{["Candidate","Cells","Structural score","Cross-cell routing","Workload CV","Throughput/hr","Mean cycle","P95 cycle","WIP","SLA","Max util","Backlog/hr","Overflow","Util guardrail","Action"].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
+      <tbody>{frontier.map(renderRow)}</tbody>
+    </table></div>
+    {dominated.length > 0 && <details style={{marginTop:12}}><summary style={{cursor:"pointer",fontSize:11,fontWeight:900,color:"#475569"}}>Show {dominated.length} generated alternatives outside the Pareto set</summary>
+      <div style={{overflowX:"auto",marginTop:8}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:10,minWidth:1600}}><tbody>{dominated.map(renderRow)}</tbody></table></div>
+    </details>}
+    <div style={{marginTop:12,padding:"10px 12px",border:"1px solid #d1fae5",background:"#ecfdf5",borderRadius:9,fontSize:11,color:"#065f46",lineHeight:1.55}}>
+      {(result?.notes || []).map((n,i) => <div key={i}>{i+1}. {n}</div>)}
+    </div>
   </div>;
 }
 

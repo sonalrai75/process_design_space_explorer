@@ -16,6 +16,7 @@ from .core.scheduling import run_phase3_scheduling_matrix
 from .core.structural_analysis import analyze_cell_structure
 from .core.candidate_generation import generate_cell_candidates
 from .core.candidate_evaluation import evaluate_cell_candidates
+from .core.auto_cellularization import run_automated_cellularization
 from .core.calibration import preview_event_log, calibrate_event_log
 from .core.contact_center_excel import (
     preview_contact_center_workbook,
@@ -149,6 +150,19 @@ class CellularizationCandidateEvaluationRequest(BaseModel):
     replications: int = 6
     local_wait_threshold_minutes: float = 30.0
     max_overflow_fraction: float = 1.0
+
+
+class AutomatedCellularizationRequest(BaseModel):
+    model: ProcessModel = DEMO_MODEL
+    architecture_id: str | None = None
+    k_values: list[int] = []
+    weights: dict[str, float] = {}
+    cases: int = 400
+    seed: int = 1700
+    replications: int = 4
+    local_wait_threshold_minutes: float = 30.0
+    max_overflow_fraction: float = 1.0
+    utilization_ceiling: float = 0.95
 
 
 class CompareRequest(BaseModel):
@@ -458,6 +472,26 @@ def cellularization_candidate_evaluation_endpoint(req: CellularizationCandidateE
             replications=req.replications,
             local_wait_threshold_minutes=req.local_wait_threshold_minutes,
             max_overflow_fraction=req.max_overflow_fraction,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/cellularization/automated")
+def automated_cellularization_endpoint(req: AutomatedCellularizationRequest):
+    try:
+        architecture_id = req.architecture_id or req.model.architectures[0].id
+        return run_automated_cellularization(
+            req.model,
+            architecture_id,
+            k_values=req.k_values or None,
+            structural_weights=req.weights,
+            cases=req.cases,
+            seed=req.seed,
+            replications=req.replications,
+            local_wait_threshold_minutes=req.local_wait_threshold_minutes,
+            max_overflow_fraction=req.max_overflow_fraction,
+            utilization_ceiling=req.utilization_ceiling,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
