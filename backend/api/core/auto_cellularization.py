@@ -135,6 +135,39 @@ def _default_k_values(model: ProcessModel, architecture_id: str) -> list[int]:
     return list(range(2, k_max + 1))
 
 
+def _simulation_blockers(model: ProcessModel, architecture_id: str) -> list[dict[str, str]]:
+    """Return known service-time blockers before Stage 2 simulation starts."""
+    arch = next((a for a in model.architectures if a.id == architecture_id), None)
+    if arch is None:
+        return [{"activity_id": "", "activity_name": "", "reason": f"Unknown architecture '{architecture_id}'."}]
+    enabled = set(arch.enabled_activities or [a.id for a in model.activities])
+    amap = model.activity_map()
+    blockers: list[dict[str, str]] = []
+    for aid in enabled:
+        act = amap.get(aid)
+        if act is None:
+            blockers.append({"activity_id": aid, "activity_name": aid, "reason": "Activity is enabled in the architecture but missing from the model."})
+            continue
+        if getattr(act, "terminal", False):
+            continue
+        st = act.service_time
+        if st.distribution == "unresolved":
+            blockers.append({
+                "activity_id": act.id,
+                "activity_name": act.name,
+                "reason": "Unresolved service-time distribution.",
+            })
+        elif st.distribution == "borrowed":
+            source = st.source_activity_id
+            if not source or source not in amap:
+                blockers.append({
+                    "activity_id": act.id,
+                    "activity_name": act.name,
+                    "reason": "Borrowed distribution has no valid source activity.",
+                })
+    return blockers
+
+
 def run_automated_cellularization(
     model: ProcessModel,
     architecture_id: str,
@@ -155,6 +188,32 @@ def run_automated_cellularization(
         k_values=selected_k,
         structural_weights=structural_weights,
     )
+    blockers = _simulation_blockers(model, architecture_id)
+    if blockers:
+        candidates = generated.get("candidates") or []
+        return {
+            "architecture_id": architecture_id,
+            "mode": "decision_support",
+            "k_values": selected_k,
+            "candidate_count": len(candidates),
+            "pareto_count": 0,
+            "pareto_candidate_ids": [],
+            "tradeoff_labels": [],
+            "utilization_ceiling": min(1.0, max(0.0, float(utilization_ceiling))),
+            "generation": {
+                "candidate_count": generated.get("candidate_count", len(candidates)),
+                "notes": generated.get("notes", []),
+            },
+            "simulation_blocked": True,
+            "blocking_activities": blockers,
+            "candidates": candidates,
+            "notes": [
+                "Stage 1 candidate generation completed successfully.",
+                "Stage 2 simulation was not run because one or more enabled activities do not yet have usable service-time models.",
+                "Resolve the listed activities, then rerun Automated Cellularization. The structural candidates are still available for inspection and loading into the editor.",
+            ],
+        }
+
     evaluated = evaluate_cell_candidates(
         model,
         architecture_id,

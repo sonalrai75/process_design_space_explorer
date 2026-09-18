@@ -321,7 +321,12 @@ export default function CellularizationPage() {
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data.detail || "Automated cellularization failed");
       setAutoCellularization(data);
-      setAutoCellularizationStatus(`Evaluated ${data.candidate_count || 0} generated designs across cell counts ${(data.k_values || []).join(", ")}. ${data.pareto_count || 0} are on the generated Pareto frontier.`);
+      if (data.simulation_blocked) {
+        const names = (data.blocking_activities || []).map(x => x.activity_name || x.activity_id).filter(Boolean);
+        setAutoCellularizationStatus(`Generated ${data.candidate_count || 0} structural candidates, but simulation is blocked by unresolved service-time data${names.length ? ` for: ${names.join(", ")}` : ""}. Resolve the listed activities and rerun.`);
+      } else {
+        setAutoCellularizationStatus(`Evaluated ${data.candidate_count || 0} generated designs across cell counts ${(data.k_values || []).join(", ")}. ${data.pareto_count || 0} are on the generated Pareto frontier.`);
+      }
       setTimeout(() => document.getElementById("automated-cellularization-results")?.scrollIntoView({behavior:"smooth",block:"start"}),50);
     } catch (e) {
       setAutoCellularizationStatus(`Automated cellularization error: ${e.message || e}`);
@@ -1039,6 +1044,36 @@ function AutomatedCellularizationPanel({result,onLoad}) {
     labelById[x.candidate_id].push(x);
   }
   const metric = (row,key) => row?.cellular_controlled_overflow?.metrics?.[key];
+  if (result?.simulation_blocked) {
+    const blockers = result?.blocking_activities || [];
+    return <div style={{marginTop:14}}>
+      <div style={{padding:"12px 14px",border:"1px solid #fed7aa",background:"#fff7ed",borderRadius:10,color:"#9a3412"}}>
+        <div style={{fontWeight:900,fontSize:13}}>Stage 1 completed; Stage 2 simulation is blocked</div>
+        <div style={{fontSize:11,marginTop:5,lineHeight:1.5}}>The app generated structural cell alternatives, but it will not fabricate service times. Resolve these activities before simulation:</div>
+        <ul style={{margin:"8px 0 0 18px",fontSize:11,lineHeight:1.55}}>
+          {blockers.map((b,i) => <li key={`${b.activity_id || "activity"}-${i}`}><b>{b.activity_name || b.activity_id || "Activity"}</b>{b.reason ? ` — ${b.reason}` : ""}</li>)}
+        </ul>
+      </div>
+      <div style={{marginTop:12,fontSize:12,fontWeight:900}}>Generated structural candidates</div>
+      <div style={{overflowX:"auto",marginTop:6}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:11,minWidth:850}}>
+        <thead><tr style={{background:"#f8fafc"}}>{["Candidate","Cells","Structural score","Cross-cell routing","Workload CV","Action"].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
+        <tbody>{rows.map(row => {
+          const score = row?.structural_analysis?.score?.decision_support_score;
+          const cross = row?.structural_analysis?.routing_localization?.cross_cell_transition_fraction;
+          const cv = row?.structural_analysis?.balance?.workload_cv;
+          return <tr key={row.id}>
+            <td style={td}><b>{row.profile_label || row.id}</b></td>
+            <td style={td}>{row.k}</td>
+            <td style={td}>{finite(score)?fmtNum(score,2):"N/A"}</td>
+            <td style={td}>{finite(cross)?fmtPct(cross):"N/A"}</td>
+            <td style={td}>{finite(cv)?fmtNum(cv,3):"N/A"}</td>
+            <td style={td}><button onClick={() => onLoad(row)} style={{padding:"6px 8px",borderRadius:7,border:"1px solid #059669",background:"#fff",color:"#047857",fontWeight:800,cursor:"pointer"}}>Load + enable overflow</button></td>
+          </tr>;
+        })}</tbody>
+      </table></div>
+      <div style={{marginTop:10,fontSize:11,color:"#64748b",lineHeight:1.5}}>Candidate generation is still useful here; only the simulation/Pareto stage is deferred until the service-time model is complete.</div>
+    </div>;
+  }
   const frontier = rows.filter(r => frontierIds.has(r.id));
   const dominated = rows.filter(r => !frontierIds.has(r.id));
   const renderRow = row => {
