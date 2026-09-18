@@ -1,4856 +1,1659 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-const API =
-  process.env.NEXT_PUBLIC_API_BASE || "";
+const API = process.env.NEXT_PUBLIC_API_BASE || "";
 
 const card = {
-  background:"#fff",
-  border:"1px solid #e5e7eb",
-  borderRadius:14,
-  padding:18,
-  boxShadow:"0 1px 2px rgba(0,0,0,.03)"
+  background:"#ffffff",
+  border:"1px solid #e2e8f0",
+  borderRadius:18,
+  padding:20,
+  boxShadow:"0 8px 28px rgba(15,23,42,.055)"
 };
 
-const buttonStyle = {
-  padding:"9px 13px",
-  borderRadius:8,
-  border:"1px solid #d1d5db",
-  background:"#fff",
-  cursor:"pointer"
+const muted = {color:"#64748b",lineHeight:1.5};
+
+const th = {
+  textAlign:"left",
+  padding:"8px 6px",
+  borderBottom:"1px solid #e2e8f0",
+  whiteSpace:"nowrap",
+  fontWeight:900
 };
 
-function Metric({label,value}) {
-  return (
-    <div style={card}>
-      <div style={{
-        fontSize:12,
-        color:"#6b7280"
-      }}>
-        {label}
-      </div>
-
-      <div style={{
-        fontSize:26,
-        fontWeight:700,
-        marginTop:6
-      }}>
-        {value}
-      </div>
-    </div>
-  );
-}
-
-function fmtPct(v) {
-  return (
-    (100 * Number(v)).toFixed(1)
-    + "%"
-  );
-}
-
-
-function fmtMax2(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return "—";
-  return n.toFixed(2).replace(/\.?0+$/,"");
-}
-
-function fmtMax2Input(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return "";
-  return String(Number(n.toFixed(2)));
-}
-
-function fmtProbabilityInput(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return "";
-  return String(Number(n.toFixed(3)));
-}
-
-function fmtFlow(v) {
-  return (
-    (100 * Math.min(Number(v), 1)).toFixed(1)
-    + "%"
-  );
-}
-
-function fmtPctPoints(delta) {
-  const pp =
-    100 * Number(delta);
-
-  return (
-    (pp >= 0 ? "+" : "")
-    + pp.toFixed(1)
-    + " pp"
-  );
-}
-
-function money(v) {
-  return (
-    "$"
-    + Math.round(Number(v))
-      .toLocaleString()
-  );
-}
-
-function formatElapsed(seconds) {
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-
-  return m > 0
-    ? `${m}m ${String(s).padStart(2,"0")}s`
-    : `${s}s`;
-}
-
-
-
-function activeArchitecture(model) {
-  const architectures =
-    Array.isArray(model?.architectures)
-    ? model.architectures
-    : [];
-
-  if (!architectures.length) {
-    return null;
-  }
-
-  const architectureVariable =
-    Array.isArray(model?.variables)
-    ? model.variables.find(
-        v => v.name === "architecture"
-      )
-    : null;
-
-  const selectedId =
-    architectureVariable?.value;
-
-  return (
-    architectures.find(
-      a => a.id === selectedId
-    )
-    || architectures[0]
-  );
-}
-
-function activeTransitions(model) {
-  const arch =
-    activeArchitecture(model);
-
-  return Array.isArray(
-    arch?.transitions
-  )
-    ? arch.transitions
-    : [];
-}
-
-function applyDesignToModel(model, architectureId, design) {
-  if (!model) return null;
-
-  const next = JSON.parse(JSON.stringify(model));
-  const d = design || {};
-
-  const archVar = (next.variables || []).find(v => v.name === "architecture");
-  if (archVar && architectureId) {
-    archVar.value = architectureId;
-  }
-
-  const resourceKey = Object.keys(next).find(
-    k => Array.isArray(next[k])
-      && next[k].length
-      && typeof next[k][0] === "object"
-      && next[k][0] !== null
-      && Object.prototype.hasOwnProperty.call(next[k][0], "capacity")
-      && k !== "variables"
-  );
-
-  if (resourceKey) {
-    next[resourceKey] = next[resourceKey].map(r => {
-      const key = `resource_capacity__${r.id}`;
-      return Object.prototype.hasOwnProperty.call(d, key)
-        ? {...r, capacity:Number(d[key])}
-        : r;
-    });
-  }
-
-  next.architectures = (next.architectures || []).map(a => {
-    if (architectureId && a.id !== architectureId) return a;
-    return {
-      ...a,
-      transitions:(a.transitions || []).map(t => {
-        const key = `routing_probability__${t.source}__${t.target}`;
-        return Object.prototype.hasOwnProperty.call(d, key)
-          ? {...t, probability:Number(d[key])}
-          : t;
-      })
-    };
-  });
-
-  return next;
-}
-
-function designChangeLines(model, design) {
-  if (!model || !design) return [];
-  const lines = [];
-
-  Object.entries(design).forEach(([name,value]) => {
-    if (name.startsWith("resource_capacity__")) {
-      const id = name.replace("resource_capacity__", "");
-      const resource = (model.resources || []).find(r => r.id === id);
-      const before = resource?.capacity;
-      if (before !== undefined && Number(before) !== Number(value)) {
-        lines.push(`${resource?.name || id}: ${Number(before).toFixed(0)} → ${Number(value).toFixed(0)}`);
-      }
-    } else if (name.startsWith("routing_probability__")) {
-      const rest = name.replace("routing_probability__", "");
-      const parts = rest.split("__");
-      const source = parts[0];
-      const target = parts.slice(1).join("__");
-      const t = activeTransitions(model).find(x => x.source === source && x.target === target);
-      const before = t?.probability;
-      if (before !== undefined && Math.abs(Number(before)-Number(value)) > 1e-9) {
-        lines.push(`${source} → ${target}: ${fmtPct(before)} → ${fmtPct(value)}`);
-      }
-    } else if (name === "automation_level") {
-      const v = (model.variables || []).find(x => x.name === name);
-      if (v && Math.abs(Number(v.value)-Number(value)) > 1e-9) {
-        lines.push(`Automation: ${fmtPct(v.value)} → ${fmtPct(value)}`);
-      }
-    }
-  });
-
-  return lines;
-}
-
-
-function finiteNumbers(values) {
-  return (Array.isArray(values) ? values : [])
-    .map(Number)
-    .filter(Number.isFinite);
-}
-
-function describeNumbers(values) {
-  const xs = finiteNumbers(values).sort((a,b) => a-b);
-  const n = xs.length;
-  if (!n) return null;
-  const sum = xs.reduce((a,b) => a+b, 0);
-  const mean = sum / n;
-  const median = n % 2
-    ? xs[(n-1)/2]
-    : (xs[n/2-1] + xs[n/2]) / 2;
-  const min = xs[0];
-  const max = xs[n-1];
-  const variance = n > 1
-    ? xs.reduce((acc,x) => acc + (x-mean)*(x-mean), 0) / (n-1)
-    : 0;
-  return {
-    n,
-    mean,
-    median,
-    min,
-    max,
-    range:max-min,
-    std:Math.sqrt(Math.max(0, variance))
-  };
-}
-
-function triangularMedian(a,c,b) {
-  a=Number(a); c=Number(c); b=Number(b);
-  if (![a,c,b].every(Number.isFinite) || b < a) return null;
-  if (b === a) return a;
-  return c >= (a+b)/2
-    ? a + Math.sqrt((b-a)*(c-a)/2)
-    : b - Math.sqrt((b-a)*(b-c)/2);
-}
-
-function modelStatsForServiceTime(st) {
-  if (!st) return null;
-  const d = st.distribution;
-  const mean = Number(st.mean_minutes);
-  const std = Number(st.std_minutes);
-  if (d === "constant") {
-    const v = Number.isFinite(mean) ? mean : 0;
-    return {n:0,mean:v,median:v,min:v,max:v,range:0,std:0};
-  }
-  if (d === "triangular") {
-    const a=Number(st.minimum_minutes), c=Number(st.mode_minutes), b=Number(st.maximum_minutes);
-    if ([a,c,b].every(Number.isFinite)) {
-      const mu=(a+b+c)/3;
-      const variance=(a*a+b*b+c*c-a*b-a*c-b*c)/18;
-      return {
-        n:0,
-        mean:mu,
-        median:triangularMedian(a,c,b),
-        min:a,
-        max:b,
-        range:b-a,
-        std:Math.sqrt(Math.max(0,variance))
-      };
-    }
-  }
-  return {
-    n:0,
-    mean:Number.isFinite(mean) ? mean : null,
-    median:null,
-    min:null,
-    max:null,
-    range:null,
-    std:Number.isFinite(std) ? std : null
-  };
-}
-
-function histogram(values,bins=12) {
-  const xs=finiteNumbers(values);
-  if (!xs.length) return [];
-  const min=Math.min(...xs), max=Math.max(...xs);
-  if (max === min) return [{lo:min,hi:max,count:xs.length}];
-  const step=(max-min)/bins;
-  const out=Array.from({length:bins},(_,i)=>({lo:min+i*step,hi:min+(i+1)*step,count:0}));
-  xs.forEach(x => {
-    const i=Math.min(bins-1,Math.max(0,Math.floor((x-min)/step)));
-    out[i].count += 1;
-  });
-  return out;
-}
-
-function StatisticValue({label,value,suffix=""}) {
-  const display = value === null || value === undefined || !Number.isFinite(Number(value))
-    ? "—"
-    : `${Number(value).toFixed(2)}${suffix}`;
-  return (
-    <div style={{background:"#fff",border:"1px solid #e5e7eb",borderRadius:8,padding:"8px 10px"}}>
-      <div style={{fontSize:10,color:"#64748b",textTransform:"uppercase",letterSpacing:".04em"}}>{label}</div>
-      <div style={{fontSize:15,fontWeight:700,marginTop:2}}>{display}</div>
-    </div>
-  );
-}
-
-function DistributionStatsPanel({title,distribution,samples,fallbackStats,observedCount,probability,onClose}) {
-  const actual=describeNumbers(samples);
-  const stats=actual || fallbackStats;
-  const hist=histogram(samples);
-  const maxCount=hist.length ? Math.max(...hist.map(x=>x.count),1) : 1;
-  return (
-    <div style={{margin:"12px",padding:14,border:"1px solid #cbd5e1",borderRadius:10,background:"#fff"}}>
-      <div style={{display:"flex",justifyContent:"space-between",gap:12,alignItems:"flex-start"}}>
-        <div>
-          <div style={{fontWeight:800}}>{title}</div>
-          <div style={{fontSize:12,color:"#64748b",marginTop:3}}>
-            Distribution: <b>{distribution || "unavailable"}</b>
-            {actual ? " · statistics computed from observed points" : " · model parameters shown where computable"}
-          </div>
-        </div>
-        <button style={{...buttonStyle,padding:"5px 9px"}} onClick={onClose}>Close</button>
-      </div>
-
-      {(observedCount !== undefined && observedCount !== null || probability !== undefined && probability !== null) &&
-        <div style={{fontSize:12,color:"#475569",marginTop:9}}>
-          {observedCount !== undefined && observedCount !== null ? `Observed transitions: ${observedCount}` : ""}
-          {observedCount !== undefined && observedCount !== null && probability !== undefined && probability !== null ? " · " : ""}
-          {probability !== undefined && probability !== null ? `Routing probability: ${(100*Number(probability)).toFixed(1)}%` : ""}
-        </div>
-      }
-
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(105px,1fr))",gap:8,marginTop:12}}>
-        <StatisticValue label="Points" value={actual ? actual.n : (observedCount ?? 0)} />
-        <StatisticValue label="Mean" value={stats?.mean} suffix=" min" />
-        <StatisticValue label="Median" value={stats?.median} suffix=" min" />
-        <StatisticValue label="Min" value={stats?.min} suffix=" min" />
-        <StatisticValue label="Max" value={stats?.max} suffix=" min" />
-        <StatisticValue label="Range" value={stats?.range} suffix=" min" />
-        <StatisticValue label="Std dev" value={stats?.std} suffix=" min" />
-      </div>
-
-      {hist.length > 0 ?
-        <div style={{marginTop:14}}>
-          <div style={{fontSize:12,fontWeight:700,marginBottom:6}}>Observed distribution</div>
-          <div style={{height:120,display:"flex",gap:3,alignItems:"flex-end",borderLeft:"1px solid #cbd5e1",borderBottom:"1px solid #cbd5e1",padding:"8px 8px 0"}}>
-            {hist.map((b,i) =>
-              <div key={i} title={`${b.lo.toFixed(2)}–${b.hi.toFixed(2)} min: ${b.count}`} style={{flex:1,minWidth:5,height:`${Math.max(4,100*b.count/maxCount)}%`,background:"#6366f1",borderRadius:"3px 3px 0 0"}} />
-            )}
-          </div>
-          <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"#64748b",marginTop:3}}>
-            <span>{hist[0].lo.toFixed(2)} min</span><span>{hist[hist.length-1].hi.toFixed(2)} min</span>
-          </div>
-        </div>
-        :
-        <div style={{fontSize:12,color:"#64748b",marginTop:12}}>
-          No observed point distribution is available for this item. Summary values are shown only where the configured distribution makes them identifiable.
-        </div>
-      }
-    </div>
-  );
-}
-
-function ProcessGraph({model,onSelectActivity,onSelectTransition,selectedActivityId,selectedTransitionIndex}) {
-  const [statsTarget,setStatsTarget] = useState(null);
-
-  const activities =
-    Array.isArray(model?.activities)
-    ? model.activities
-    : [];
-
-  const transitions =
-    activeTransitions(model);
-
-  if (!activities.length) {
-    return (
-      <div style={{
-        color:"#6b7280",
-        fontSize:13
-      }}>
-        No activities to display.
-      </div>
-    );
-  }
-
-  const byId =
-    Object.fromEntries(
-      activities.map(
-        a => [a.id,a]
-      )
-    );
-
-  const outgoing = {};
-
-  transitions.forEach(t => {
-    if (!outgoing[t.source]) {
-      outgoing[t.source] = [];
-    }
-
-    outgoing[t.source].push(
-      t.target
-    );
-  });
-
-  // Breadth-first levels give a stable left-to-right process layout.
-  // Cycles/rework edges are retained as edges but do not alter node level.
-  const level = {};
-  const start =
-    model?.start_activity
-    && byId[model.start_activity]
-    ? model.start_activity
-    : activities[0].id;
-
-  level[start] = 0;
-
-  const queue = [start];
-
-  while (queue.length) {
-    const current =
-      queue.shift();
-
-    const nexts =
-      outgoing[current] || [];
-
-    nexts.forEach(next => {
-      if (
-        byId[next]
-        && level[next] === undefined
-      ) {
-        level[next] =
-          level[current] + 1;
-
-        queue.push(next);
-      }
-    });
-  }
-
-  // Put disconnected activities to the right rather than dropping them.
-  let maxLevel =
-    Math.max(
-      0,
-      ...Object.values(level)
-    );
-
-  activities.forEach(a => {
-    if (level[a.id] === undefined) {
-      maxLevel += 1;
-      level[a.id] = maxLevel;
-    }
-  });
-
-  const groups = {};
-
-  activities.forEach(a => {
-    const l = level[a.id];
-
-    if (!groups[l]) {
-      groups[l] = [];
-    }
-
-    groups[l].push(a);
-  });
-
-  const levels =
-    Object.keys(groups)
-    .map(Number)
-    .sort((a,b) => a-b);
-
-  const nodeW = 160;
-  const nodeH = 88;
-  const xGap = 90;
-  const yGap = 44;
-  const marginX = 35;
-  const marginY = 35;
-
-  const maxRows =
-    Math.max(
-      1,
-      ...levels.map(
-        l => groups[l].length
-      )
-    );
-
-  const width =
-    Math.max(
-      720,
-      marginX * 2
-      + levels.length * nodeW
-      + Math.max(
-          0,
-          levels.length - 1
-        ) * xGap
-    );
-
-  const height =
-    Math.max(
-      220,
-      marginY * 2
-      + maxRows * nodeH
-      + Math.max(
-          0,
-          maxRows - 1
-        ) * yGap
-    );
-
-  const pos = {};
-
-  levels.forEach((l,li) => {
-    const group =
-      groups[l];
-
-    const groupHeight =
-      group.length * nodeH
-      + Math.max(
-          0,
-          group.length - 1
-        ) * yGap;
-
-    const y0 =
-      (height - groupHeight) / 2;
-
-    group.forEach((a,ri) => {
-      pos[a.id] = {
-        x:
-          marginX
-          + li * (
-              nodeW + xGap
-            ),
-        y:
-          y0
-          + ri * (
-              nodeH + yGap
-            )
-      };
-    });
-  });
-
-  function edgePath(
-    source,
-    target,
-    index
-  ) {
-    const s = pos[source];
-    const t = pos[target];
-
-    if (!s || !t) {
-      return "";
-    }
-
-    const sx =
-      s.x + nodeW;
-
-    const sy =
-      s.y + nodeH / 2;
-
-    const tx =
-      t.x;
-
-    const ty =
-      t.y + nodeH / 2;
-
-    // Forward branch / merge.
-    if (tx > sx + 10) {
-      const bend =
-        Math.max(
-          35,
-          (tx - sx) * 0.48
-        );
-
-      return (
-        `M ${sx} ${sy} `
-        + `C ${sx+bend} ${sy}, `
-        + `${tx-bend} ${ty}, `
-        + `${tx} ${ty}`
-      );
-    }
-
-    // Same-level or backward edges are rework / loop-like.
-    const loopOffset =
-      38 + (index % 4) * 13;
-
-    const top =
-      Math.max(
-        10,
-        Math.min(
-          sy,
-          ty
-        ) - loopOffset
-      );
-
-    return (
-      `M ${sx} ${sy} `
-      + `C ${sx+loopOffset} ${top}, `
-      + `${tx-loopOffset} ${top}, `
-      + `${tx} ${ty}`
-    );
-  }
-
-  return (
-    <div style={{
-      overflowX:"auto",
-      border:"1px solid #e5e7eb",
-      borderRadius:12,
-      background:"#fafafa"
-    }}>
-      <svg
-        width={width}
-        height={height}
-        viewBox={`0 0 ${width} ${height}`}
-        role="img"
-        aria-label="Process workflow graph"
-      >
-        <defs>
-          <marker
-            id="process-arrow"
-            viewBox="0 0 10 10"
-            refX="9"
-            refY="5"
-            markerWidth="7"
-            markerHeight="7"
-            orient="auto-start-reverse"
-          >
-            <path
-              d="M 0 0 L 10 5 L 0 10 z"
-              fill="#64748b"
-            />
-          </marker>
-        </defs>
-
-        {transitions.map(
-          (t,i) => {
-            const s = pos[t.source];
-            const target =
-              pos[t.target];
-
-            if (!s || !target) {
-              return null;
-            }
-
-            const backward =
-              target.x <= s.x;
-
-            const mx =
-              backward
-              ? (
-                  s.x
-                  + target.x
-                  + nodeW
-                ) / 2
-              : (
-                  s.x
-                  + nodeW
-                  + target.x
-                ) / 2;
-
-            const my =
-              backward
-              ? Math.max(
-                  16,
-                  Math.min(
-                    s.y,
-                    target.y
-                  ) - 24
-                )
-              : (
-                  s.y
-                  + target.y
-                  + nodeH
-                ) / 2;
-
-            return (
-              <g
-                key={`${t.source}-${t.target}-${i}`}
-                onClick={() => onSelectTransition?.(i)}
-                style={{cursor:onSelectTransition ? "pointer" : "default"}}
-              >
-                <path
-                  d={edgePath(
-                    t.source,
-                    t.target,
-                    i
-                  )}
-                  fill="none"
-                  stroke={
-                    selectedTransitionIndex === i
-                    ? "#2563eb"
-                    : backward
-                      ? "#b45309"
-                      : "#64748b"
-                  }
-                  strokeWidth={selectedTransitionIndex === i ? "4" : "2"}
-                  strokeDasharray={
-                    backward
-                    ? "6 4"
-                    : undefined
-                  }
-                  markerEnd="url(#process-arrow)"
-                />
-
-                {t.probability
-                  !== undefined
-                  &&
-                  <g>
-                    <rect
-                      x={mx-52}
-                      y={my-10}
-                      width="48"
-                      height="19"
-                      rx="8"
-                      fill="#fff"
-                      stroke="#e5e7eb"
-                    />
-
-                    <text
-                      x={mx-28}
-                      y={my+4}
-                      textAnchor="middle"
-                      fontSize="10"
-                      fill="#475569"
-                    >
-                      {
-                        (
-                          100
-                          * Number(
-                              t.probability
-                              || 0
-                            )
-                        ).toFixed(0)
-                      }%
-                    </text>
-
-                    <g
-                      onClick={e => {
-                        e.stopPropagation();
-                        setStatsTarget({type:"transition",index:i});
-                      }}
-                      style={{cursor:"pointer"}}
-                    >
-                      <rect x={mx+2} y={my-10} width="45" height="19" rx="8" fill="#eef2ff" stroke="#a5b4fc" />
-                      <text x={mx+24.5} y={my+4} textAnchor="middle" fontSize="9.5" fontWeight="700" fill="#4338ca">Stats</text>
-                    </g>
-                  </g>
-                }
-              </g>
-            );
-          }
-        )}
-
-        {activities.map(a => {
-          const p = pos[a.id];
-
-          if (!p) return null;
-
-          const isStart =
-            a.id
-            === model.start_activity;
-
-          const isEnd =
-            a.id
-            === model.end_activity;
-
-          return (
-            <g
-              key={a.id}
-              transform={`translate(${p.x},${p.y})`}
-              onClick={() => onSelectActivity?.(a.id)}
-              style={{cursor:onSelectActivity ? "pointer" : "default"}}
-            >
-              <rect
-                width={nodeW}
-                height={nodeH}
-                rx="12"
-                fill={
-                  isStart
-                  ? "#eef2ff"
-                  : isEnd
-                    ? "#ecfdf5"
-                    : "#ffffff"
-                }
-                stroke={
-                  isStart
-                  ? "#6366f1"
-                  : isEnd
-                    ? "#10b981"
-                    : "#cbd5e1"
-                }
-                strokeWidth={
-                  selectedActivityId === a.id
-                  ? "4"
-                  : isStart || isEnd
-                    ? "2"
-                    : "1.5"
-                }
-              />
-
-              <text
-                x={nodeW/2}
-                y="25"
-                textAnchor="middle"
-                fontSize="13"
-                fontWeight="700"
-                fill="#111827"
-              >
-                {
-                  String(
-                    a.name || a.id
-                  ).length > 21
-                  ? String(
-                      a.name || a.id
-                    ).slice(0,20) + "…"
-                  : a.name || a.id
-                }
-              </text>
-
-              <text
-                x={nodeW/2}
-                y="45"
-                textAnchor="middle"
-                fontSize="10.5"
-                fill="#64748b"
-              >
-                {
-                  Number(
-                    a.service_time
-                    ?.mean_minutes
-                    || 0
-                  ).toFixed(1)
-                } min · {
-                  a.resource_pool
-                  || "no pool"
-                }
-              </text>
-
-              {(isStart || isEnd)
-                &&
-                <text
-                  x="10"
-                  y="67"
-                  fontSize="9"
-                  fontWeight="700"
-                  fill={isStart ? "#4f46e5" : "#059669"}
-                >
-                  {isStart ? "START" : "END"}
-                </text>
-              }
-
-              <g
-                onClick={e => {
-                  e.stopPropagation();
-                  setStatsTarget({type:"activity",id:a.id});
-                }}
-                style={{cursor:"pointer"}}
-              >
-                <rect x={nodeW-58} y="56" width="48" height="20" rx="8" fill="#eef2ff" stroke="#a5b4fc" />
-                <text x={nodeW-34} y="70" textAnchor="middle" fontSize="9.5" fontWeight="700" fill="#4338ca">Stats</text>
-              </g>
-            </g>
-          );
-        })}
-      </svg>
-
-      {statsTarget?.type === "activity" && (() => {
-        const a = activities.find(x => x.id === statsTarget.id);
-        if (!a) return null;
-        const st = a.service_time || {};
-        return (
-          <DistributionStatsPanel
-            title={`${a.name || a.id} — activity duration`}
-            distribution={st.distribution}
-            samples={st.samples_minutes}
-            fallbackStats={modelStatsForServiceTime(st)}
-            onClose={() => setStatsTarget(null)}
-          />
-        );
-      })()}
-
-      {statsTarget?.type === "transition" && (() => {
-        const t = transitions[statsTarget.index];
-        if (!t) return null;
-        const source = byId[t.source]?.name || t.source;
-        const target = byId[t.target]?.name || t.target;
-        return (
-          <DistributionStatsPanel
-            title={`${source} → ${target} — handoff delay`}
-            distribution={finiteNumbers(t.handoff_samples_minutes).length ? "empirical" : "unavailable"}
-            samples={t.handoff_samples_minutes}
-            fallbackStats={null}
-            observedCount={t.observed_count}
-            probability={t.probability}
-            onClose={() => setStatsTarget(null)}
-          />
-        );
-      })()}
-
-      <div style={{
-        fontSize:11,
-        color:"#64748b",
-        padding:"0 12px 10px"
-      }}>
-        Solid arrows show forward routing. Dashed amber arrows
-        indicate same-level/backward routing such as rework loops.
-        Edge labels show routing probabilities. Use each node or edge Stats button to inspect its observed distribution and descriptive statistics.
-      </div>
-    </div>
-  );
-}
-
-function DesignSpaceChart({results,target=0.90}) {
-  const points = [];
-
-  (results || []).forEach(r => {
-    const frontier = r?.robust_frontier?.frontier || [];
-    frontier.forEach(p => points.push({
-      architecture:r.architecture,
-      cost:Number(p.cost),
-      robustness:Number(p.robustness_probability),
-      targetMet:Boolean(p.target_met)
-    }));
-  });
-
-  if (!points.length) return null;
-
-  const width = 760;
-  const height = 300;
-  const pad = {left:72,right:25,top:25,bottom:48};
-  const costs = points.map(p => p.cost);
-  const cmin = Math.min(...costs);
-  const cmax = Math.max(...costs);
-  const span = Math.max(cmax-cmin, 1);
-  const x = c => pad.left + (c-cmin)/span*(width-pad.left-pad.right);
-  const y = r => pad.top + (1-r)*(height-pad.top-pad.bottom);
-
-  return (
-    <div style={{...card,marginTop:16,background:"#fafafa"}}>
-      <div style={{fontWeight:800}}>Design-space frontier</div>
-      <div style={{fontSize:12,color:"#6b7280",marginTop:3}}>
-        Each point is a cost/robustness candidate from the replicated frontier.
-        The dashed line marks the robustness target.
-      </div>
-      <div style={{overflowX:"auto",marginTop:8}}>
-        <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
-          <line x1={pad.left} y1={pad.top} x2={pad.left} y2={height-pad.bottom} stroke="#94a3b8" />
-          <line x1={pad.left} y1={height-pad.bottom} x2={width-pad.right} y2={height-pad.bottom} stroke="#94a3b8" />
-          <line x1={pad.left} y1={y(target)} x2={width-pad.right} y2={y(target)} stroke="#b45309" strokeDasharray="6 5" />
-          <text x={width-pad.right} y={y(target)-5} textAnchor="end" fontSize="11" fill="#92400e">{fmtPct(target)} target</text>
-          {[0.5,0.75,0.9,1.0].map(v => (
-            <g key={v}>
-              <line x1={pad.left-5} y1={y(v)} x2={pad.left} y2={y(v)} stroke="#94a3b8"/>
-              <text x={pad.left-9} y={y(v)+4} textAnchor="end" fontSize="10" fill="#64748b">{fmtPct(v)}</text>
-            </g>
-          ))}
-          {points.map((p,i) => (
-            <g key={`${p.architecture}-${i}`}>
-              <circle cx={x(p.cost)} cy={y(p.robustness)} r={p.targetMet ? 6 : 4.5} fill={p.targetMet ? "#16a34a" : "#64748b"}>
-                <title>{`${p.architecture}: ${money(p.cost)}, ${fmtPct(p.robustness)}`}</title>
-              </circle>
-            </g>
-          ))}
-          <text x={(pad.left+width-pad.right)/2} y={height-10} textAnchor="middle" fontSize="11" fill="#475569">Annual cost</text>
-          <text transform={`translate(16 ${(pad.top+height-pad.bottom)/2}) rotate(-90)`} textAnchor="middle" fontSize="11" fill="#475569">Replicated feasibility</text>
-          <text x={pad.left} y={height-pad.bottom+18} fontSize="10" fill="#64748b">{money(cmin)}</text>
-          <text x={width-pad.right} y={height-pad.bottom+18} textAnchor="end" fontSize="10" fill="#64748b">{money(cmax)}</text>
-        </svg>
-      </div>
-    </div>
-  );
-}
-
-function FrontierCard({title,item,target}) {
-  if (!item) {
-    return (
-      <div style={{
-        ...card,
-        background:"#fafafa"
-      }}>
-        <div style={{
-          fontSize:12,
-          color:"#6b7280",
-          textTransform:"uppercase",
-          fontWeight:700
-        }}>
-          {title}
-        </div>
-
-        <div style={{
-          marginTop:8,
-          fontWeight:700,
-          color:"#991b1b"
-        }}>
-          No candidate met the target
-        </div>
-      </div>
-    );
-  }
-
-  const met =
-    item.robustness_probability
-    >= target;
-
-  return (
-    <div style={{
-      ...card,
-      background:"#fafafa"
-    }}>
-      <div style={{
-        fontSize:12,
-        color:"#6b7280",
-        textTransform:"uppercase",
-        fontWeight:700
-      }}>
-        {title}
-      </div>
-
-      <div style={{
-        fontSize:22,
-        fontWeight:700,
-        marginTop:6
-      }}>
-        {money(item.cost)}
-      </div>
-
-      <div style={{
-        fontSize:14,
-        marginTop:4,
-        color:met
-          ? "#166534"
-          : "#991b1b",
-        fontWeight:700
-      }}>
-        {met
-          ? "TARGET MET"
-          : "TARGET NOT MET"} · {
-          fmtPct(
-            item.robustness_probability
-          )
-        }
-      </div>
-
-      <div style={{
-        fontSize:12,
-        marginTop:4,
-        color:"#6b7280"
-      }}>
-        95% CI [
-        {
-          fmtPct(
-            item.robustness_ci95.lower
-          )
-        },{" "}
-        {
-          fmtPct(
-            item.robustness_ci95.upper
-          )
-        }]
-      </div>
-
-      <div style={{
-        fontSize:12,
-        marginTop:4,
-        color:"#6b7280"
-      }}>
-        Throughput {
-          item.quick_robustness
-          .mean_throughput
-          .toFixed(2)
-        }/hr · Flow balance {
-          fmtFlow(item.quick_robustness
-            .mean_flow_balance)
-        } · SLA {
-          fmtPct(
-            item.quick_robustness
-            .mean_sla
-          )
-        } · Max util {
-          fmtPct(
-            item.quick_robustness
-            .max_resource_utilization
-          )
-        }
-      </div>
-    </div>
-  );
-}
-
-
-function OptimizationImmediateSummary({opt}) {
-  if (!opt) return null;
-  const results = Array.isArray(opt?.results) ? opt.results : [];
-  return (
-    <div style={{...card,marginTop:12,background:"#f8fafc",border:"1px solid #cbd5e1"}}>
-      <div style={{fontSize:12,fontWeight:800,textTransform:"uppercase",color:"#475569"}}>Optimization output</div>
-      {results.length ? (
-        <>
-          <div style={{fontSize:14,marginTop:6,color:"#0f172a"}}>
-            Completed successfully · <b>{results.length}</b> architecture result{results.length === 1 ? "" : "s"}.
-          </div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:8,marginTop:10}}>
-            {results.map((r,i) => {
-              const cost = Number(r?.best?.metrics?.annual_cost);
-              const prob = Number(r?.robustness?.probability);
-              return (
-                <div key={`${r?.architecture || i}`} style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:10,padding:10}}>
-                  <div style={{fontWeight:800}}>{r?.architecture || `Architecture ${i+1}`}</div>
-                  <div style={{fontSize:12,color:"#475569",marginTop:4}}>
-                    {Number.isFinite(cost) ? `Annual cost ${money(cost)}` : "No selected design cost returned"}
-                    {Number.isFinite(prob) ? ` · replicated feasibility ${fmtPct(prob)}` : ""}
-                  </div>
-                  <div style={{fontSize:12,fontWeight:700,marginTop:4,color:r?.robust_target_met ? "#166534" : "#991b1b"}}>
-                    {r?.robust_target_met ? "ROBUSTNESS TARGET MET" : "ROBUSTNESS TARGET NOT MET"}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          <a href="#optimization-results" style={{display:"inline-block",marginTop:10,fontSize:12,fontWeight:700,color:"#4338ca"}}>View full optimization details ↓</a>
-        </>
-      ) : (
-        <div style={{fontSize:13,marginTop:6,color:"#991b1b"}}>
-          The optimization request completed, but the response did not contain a results array.
-        </div>
-      )}
-    </div>
-  );
-}
-
-export default function Home() {
-  const [
-    status,
-    setStatus
-  ] = useState("Ready");
-
-  const [
-    workflowClass,
-    setWorkflowClass
-  ] = useState("general");
-
-  const [
-    contactCenterPreview,
-    setContactCenterPreview
-  ] = useState(null);
-
-  const [
-    runningAction,
-    setRunningAction
-  ] = useState(null);
-
-  const [
-    elapsed,
-    setElapsed
-  ] = useState(0);
-
-  const [
-    model,
-    setModel
-  ] = useState(null);
-
-  const [
-    sim,
-    setSim
-  ] = useState(null);
-
-  const [
-    opt,
-    setOpt
-  ] = useState(null);
-
-  const [
-    optError,
-    setOptError
-  ] = useState("");
-
-  const [
-    cmp,
-    setCmp
-  ] = useState(null);
-
-  const [
-    logFile,
-    setLogFile
-  ] = useState(null);
-
-  const [
-    logPreview,
-    setLogPreview
-  ] = useState(null);
-
-  const [
-    mapping,
-    setMapping
-  ] = useState({
-    case_id:"",
-    activity:"",
-    start_time:"",
-    end_time:"",
-    resource:""
-  });
-
-  const [
-    calibration,
-    setCalibration
-  ] = useState(null);
-
-  const [selectedActivityId,setSelectedActivityId] = useState(null);
-  const [selectedTransitionIndex,setSelectedTransitionIndex] = useState(null);
-  const [skillMatrixOpen,setSkillMatrixOpen] = useState(false);
-
-  const unresolvedActivities = (model?.activities || []).filter(
-    a => a?.model_source === "unresolved" || a?.service_time?.distribution === "unresolved"
-  );
-
-  const liveActivityModels = (calibration?.activity_models || []).map(x => {
-    const activity = (model?.activities || []).find(a => a.id === x.activity_id);
-    return activity
-      ? {
-          ...x,
-          model_source:activity.model_source ?? x.model_source,
-          distribution:activity.service_time?.distribution ?? x.distribution,
-          confidence:activity.confidence ?? x.confidence
-        }
-      : x;
-  });
+const td = {
+  padding:"8px 6px",
+  borderBottom:"1px solid #f1f5f9",
+  verticalAlign:"top",
+  whiteSpace:"nowrap"
+};
+
+const DEFAULT_STRUCTURAL_WEIGHTS = {
+  work_type_entropy:1,
+  routing_entropy:1,
+  skill_entropy:1,
+  activity_entropy:1,
+  processing_entropy:0.5,
+  fragmentation_penalty:0.5,
+  capacity_imbalance_penalty:0.75,
+  skill_duplication_penalty:0.5,
+  pooling_loss_penalty:0.75,
+  overflow_pressure_penalty:1
+};
+
+export default function CellularizationPage() {
+  const [model,setModel] = useState(null);
+  const [status,setStatus] = useState("Loading current process model");
+  const [cells,setCells] = useState([]);
+  const [cellStatus,setCellStatus] = useState("");
+  const [experiment,setExperiment] = useState(null);
+  const [experimentStatus,setExperimentStatus] = useState("");
+  const [experimentBusy,setExperimentBusy] = useState(false);
+  const [phase2Experiment,setPhase2Experiment] = useState(null);
+  const [phase2Status,setPhase2Status] = useState("");
+  const [phase2Busy,setPhase2Busy] = useState(false);
+  const [overflowWaitThreshold,setOverflowWaitThreshold] = useState(30);
+  const [maxOverflowPercent,setMaxOverflowPercent] = useState(100);
+  const [phase3Experiment,setPhase3Experiment] = useState(null);
+  const [phase3Status,setPhase3Status] = useState("");
+  const [phase3Busy,setPhase3Busy] = useState(false);
+  const [sensitivityResults,setSensitivityResults] = useState(null);
+  const [sensitivityStatus,setSensitivityStatus] = useState("");
+  const [sensitivityBusy,setSensitivityBusy] = useState(false);
+  const [structuralAnalysis,setStructuralAnalysis] = useState(null);
+  const [structuralStatus,setStructuralStatus] = useState("");
+  const [structuralBusy,setStructuralBusy] = useState(false);
+  const [structuralWeights,setStructuralWeights] = useState(DEFAULT_STRUCTURAL_WEIGHTS);
+  const [candidateSet,setCandidateSet] = useState(null);
+  const [candidateStatus,setCandidateStatus] = useState("");
+  const [candidateBusy,setCandidateBusy] = useState(false);
+  const [candidateEvaluation,setCandidateEvaluation] = useState(null);
+  const [candidateEvaluationStatus,setCandidateEvaluationStatus] = useState("");
+  const [candidateEvaluationBusy,setCandidateEvaluationBusy] = useState(false);
+  const [autoCellularization,setAutoCellularization] = useState(null);
+  const [autoCellularizationStatus,setAutoCellularizationStatus] = useState("");
+  const [autoCellularizationBusy,setAutoCellularizationBusy] = useState(false);
+  const [savedDesigns,setSavedDesigns] = useState([]);
+  const [savedDesignName,setSavedDesignName] = useState("");
 
   useEffect(() => {
-    if (!runningAction) {
-      setElapsed(0);
+    let cancelled = false;
+
+    async function load() {
+      try {
+        const saved = localStorage.getItem("pds_cellularization_model");
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (!cancelled) {
+            setModel(parsed);
+            const savedCells = localStorage.getItem("pds_cellularization_cells");
+            if (!savedCells && Array.isArray(parsed.cells)) setCells(parsed.cells);
+            setStatus("Current workspace model loaded");
+          }
+          return;
+        }
+
+        const r = await fetch(`${API}/api/demo/model`);
+        if (!r.ok) throw new Error("No workspace model is available");
+        const data = await r.json();
+        if (!cancelled) {
+          setModel(data);
+          const savedCells = localStorage.getItem("pds_cellularization_cells");
+          if (!savedCells && Array.isArray(data.cells)) setCells(data.cells);
+          setStatus("Demo model loaded because no workspace model was saved");
+        }
+      } catch (e) {
+        if (!cancelled) setStatus(e.message || "Unable to load model");
+      }
+    }
+
+    load();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("pds_cellularization_cells");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) setCells(parsed);
+      }
+    } catch (_) {}
+  }, []);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("pds_saved_cell_designs");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) setSavedDesigns(parsed);
+      }
+    } catch (_) {}
+  }, []);
+
+  const activeArchitecture = useMemo(() => {
+    if (!model) return null;
+    const archVar = (model.variables || []).find(v => v.name === "architecture");
+    const id = archVar?.value || model.architectures?.[0]?.id;
+    return (model.architectures || []).find(a => a.id === id) || model.architectures?.[0] || null;
+  }, [model]);
+
+  const enabledActivities = useMemo(() => {
+    if (!model) return [];
+    const ids = new Set(activeArchitecture?.enabled_activities || (model.activities || []).map(a => a.id));
+    return (model.activities || []).filter(a => ids.has(a.id));
+  }, [model,activeArchitecture]);
+
+  const capacityUse = useMemo(() => {
+    const out = {};
+    for (const r of (model?.resources || [])) out[r.id] = 0;
+    for (const c of cells) {
+      for (const [rid,val] of Object.entries(c.resource_capacities || {})) {
+        out[rid] = (out[rid] || 0) + Math.max(0,Number(val) || 0);
+      }
+    }
+    return out;
+  }, [cells,model]);
+
+  const activityAssignments = useMemo(() => {
+    const out = {};
+    for (const c of cells) for (const aid of (c.activity_ids || [])) {
+      if (!out[aid]) out[aid] = [];
+      out[aid].push(c.id);
+    }
+    return out;
+  }, [cells]);
+
+  function addCell() {
+    const id = `cell_${Date.now()}`;
+    setCells(prev => [...prev,{id,name:`Cell ${prev.length+1}`,activity_ids:[],resource_capacities:{},preferred_work_types:[],cross_cell_eligible:false}]);
+    setCellStatus("");
+  }
+
+  function removeCell(id) {
+    setCells(prev => prev.filter(c => c.id !== id));
+    setCellStatus("");
+  }
+
+  function updateCell(id,patch) {
+    setCells(prev => prev.map(c => c.id === id ? {...c,...patch} : c));
+    setCellStatus("");
+  }
+
+  function toggleActivity(cellId,activityId) {
+    setCells(prev => prev.map(c => {
+      if (c.id !== cellId) return c;
+      const set = new Set(c.activity_ids || []);
+      if (set.has(activityId)) set.delete(activityId); else set.add(activityId);
+      return {...c,activity_ids:[...set]};
+    }));
+    setCellStatus("");
+  }
+
+  function setCellCapacity(cellId,resourceId,value) {
+    const baseline = Number((model?.resources || []).find(r => r.id === resourceId)?.capacity || 0);
+    const requested = Math.max(0,Math.floor(Number(value) || 0));
+
+    setCells(prev => {
+      const allocatedElsewhere = prev
+        .filter(c => c.id !== cellId)
+        .reduce((sum,c) => sum + Math.max(0,Number(c.resource_capacities?.[resourceId]) || 0),0);
+      const availableForThisCell = Math.max(0,baseline - allocatedElsewhere);
+      const n = Math.min(requested,availableForThisCell);
+
+      return prev.map(c => c.id === cellId ? {
+        ...c,
+        resource_capacities:{...(c.resource_capacities || {}),[resourceId]:n}
+      } : c);
+    });
+    setCellStatus("");
+  }
+
+  const phase1Ready = useMemo(() => {
+    if (!model || !cells.length) return false;
+    const activitiesValid = enabledActivities.every(a => (activityAssignments[a.id] || []).length === 1);
+    const resourcesExact = (model.resources || []).every(r => (capacityUse[r.id] || 0) === Number(r.capacity || 0));
+    return activitiesValid && resourcesExact;
+  }, [model,cells,enabledActivities,activityAssignments,capacityUse]);
+
+  const structuralReady = useMemo(() => {
+    if (!model || !cells.length) return false;
+    return enabledActivities.every(a => (activityAssignments[a.id] || []).length === 1);
+  }, [model,cells,enabledActivities,activityAssignments]);
+
+  const phase2Ready = useMemo(() => {
+    return phase1Ready && cells.some(c => !!c.cross_cell_eligible);
+  }, [phase1Ready,cells]);
+
+  async function runStructuralAnalysis() {
+    if (!model || !structuralReady || !activeArchitecture) return;
+    setStructuralAnalysis(null);
+    setStructuralBusy(true);
+    setStructuralStatus("Analyzing structural coherence of the current cell design...");
+    try {
+      const analysisModel = {...model,cells};
+      const r = await fetch(`${API}/api/cellularization/structural-analysis`, {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          model:analysisModel,
+          architecture_id:activeArchitecture.id,
+          weights:structuralWeights
+        })
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "Structural analysis failed");
+      setStructuralAnalysis(data);
+      setStructuralStatus("Structural analysis complete. Lower score means structurally cleaner under the selected weights; simulation still determines operational value.");
+    } catch (e) {
+      setStructuralStatus(`Analysis error: ${e.message || e}`);
+    } finally {
+      setStructuralBusy(false);
+    }
+  }
+
+  function setStructuralWeight(key,value) {
+    const n = Math.max(0,Number(value) || 0);
+    setStructuralWeights(prev => ({...prev,[key]:n}));
+    setStructuralAnalysis(null);
+    setStructuralStatus("Weights changed. Rerun structural analysis to update the score.");
+  }
+
+  async function generateCandidateCells() {
+    if (!model || !activeArchitecture) return;
+    setCandidateSet(null);
+    setCandidateEvaluation(null);
+    setCandidateEvaluationStatus("");
+    setCandidateBusy(true);
+    setCandidateStatus("Generating structurally coherent 2-cell and 3-cell candidates...");
+    try {
+      const r = await fetch(`${API}/api/cellularization/generate-candidates`, {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          model,
+          architecture_id:activeArchitecture.id,
+          k_values:[2,3],
+          weights:structuralWeights
+        })
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "Candidate generation failed");
+      setCandidateSet(data);
+      setCandidateStatus(`Generated ${data.candidate_count || 0} distinct candidate design${Number(data.candidate_count || 0) === 1 ? "" : "s"}. No candidate is automatically recommended; inspect and simulate before judging performance.`);
+      setTimeout(() => document.getElementById("candidate-cell-designs")?.scrollIntoView({behavior:"smooth",block:"start"}),50);
+    } catch (e) {
+      setCandidateStatus(`Candidate generation error: ${e.message || e}`);
+    } finally {
+      setCandidateBusy(false);
+    }
+  }
+
+  async function evaluateGeneratedCandidates() {
+    if (!model || !activeArchitecture || !candidateSet?.candidates?.length) return;
+    setCandidateEvaluation(null);
+    setCandidateEvaluationBusy(true);
+    setCandidateEvaluationStatus("Running paired simulation evaluation for all generated candidates...");
+    try {
+      const r = await fetch(`${API}/api/cellularization/evaluate-candidates`, {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          model,
+          architecture_id:activeArchitecture.id,
+          candidates:candidateSet.candidates,
+          weights:structuralWeights,
+          cases:600,
+          seed:1300,
+          replications:6,
+          local_wait_threshold_minutes:Number(overflowWaitThreshold) || 0,
+          max_overflow_fraction:Math.max(0,Math.min(1,(Number(maxOverflowPercent) || 0)/100))
+        })
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "Candidate evaluation failed");
+      setCandidateEvaluation(data);
+      setCandidateEvaluationStatus(`Evaluated ${data.candidate_count || 0} candidate design${Number(data.candidate_count || 0) === 1 ? "" : "s"} against the same global baseline.`);
+      setTimeout(() => document.getElementById("candidate-evaluation-matrix")?.scrollIntoView({behavior:"smooth",block:"start"}),50);
+    } catch (e) {
+      setCandidateEvaluationStatus(`Candidate evaluation error: ${e.message || e}`);
+    } finally {
+      setCandidateEvaluationBusy(false);
+    }
+  }
+
+  async function runAutomatedCellularization() {
+    if (!model || !activeArchitecture || enabledActivities.length < 2) return;
+    setAutoCellularization(null);
+    setAutoCellularizationBusy(true);
+    setAutoCellularizationStatus("Generating candidate cell structures and running paired simulation evaluation...");
+    try {
+      const r = await fetch(`${API}/api/cellularization/automated`, {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          model,
+          architecture_id:activeArchitecture.id,
+          k_values:[],
+          weights:structuralWeights,
+          cases:400,
+          seed:1700,
+          replications:4,
+          local_wait_threshold_minutes:Number(overflowWaitThreshold) || 0,
+          max_overflow_fraction:Math.max(0,Math.min(1,(Number(maxOverflowPercent) || 0)/100)),
+          utilization_ceiling:0.95
+        })
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.detail || "Automated cellularization failed");
+      setAutoCellularization(data);
+      if (data.simulation_blocked) {
+        const names = (data.blocking_activities || []).map(x => x.activity_name || x.activity_id).filter(Boolean);
+        setAutoCellularizationStatus(`Generated ${data.candidate_count || 0} structural candidates, but simulation is blocked by unresolved service-time data${names.length ? ` for: ${names.join(", ")}` : ""}. Resolve the listed activities and rerun.`);
+      } else {
+        setAutoCellularizationStatus(`Evaluated ${data.candidate_count || 0} generated designs across cell counts ${(data.k_values || []).join(", ")}. ${data.pareto_count || 0} are on the generated Pareto frontier.`);
+      }
+      setTimeout(() => document.getElementById("automated-cellularization-results")?.scrollIntoView({behavior:"smooth",block:"start"}),50);
+    } catch (e) {
+      setAutoCellularizationStatus(`Automated cellularization error: ${e.message || e}`);
+    } finally {
+      setAutoCellularizationBusy(false);
+    }
+  }
+
+  function persistSavedDesigns(next) {
+    setSavedDesigns(next);
+    try { localStorage.setItem("pds_saved_cell_designs",JSON.stringify(next)); } catch (_) {}
+  }
+
+  function saveCandidateDesign(candidate) {
+    const sourceName = candidate?.profile_label || candidate?.id || "Generated design";
+    const snapshot = {
+      id:`saved_${Date.now()}_${Math.random().toString(36).slice(2,8)}`,
+      name:`${sourceName}${candidate?.k ? ` (${candidate.k} cells)` : ""}`,
+      source:"generated",
+      source_candidate_id:candidate?.id || null,
+      created_at:new Date().toISOString(),
+      cells:JSON.parse(JSON.stringify(candidate?.cells || []))
+    };
+    persistSavedDesigns([snapshot,...savedDesigns]);
+    setCellStatus(`Saved "${snapshot.name}" to the design workspace. Loading another candidate will not overwrite this snapshot.`);
+  }
+
+  function saveCurrentDesignSnapshot() {
+    if (!cells.length) {
+      setCellStatus("Nothing to save: define or load a cell design first.");
       return;
     }
+    const name = savedDesignName.trim() || `Cell design ${savedDesigns.length + 1}`;
+    const snapshot = {
+      id:`saved_${Date.now()}_${Math.random().toString(36).slice(2,8)}`,
+      name,
+      source:"editor",
+      created_at:new Date().toISOString(),
+      cells:JSON.parse(JSON.stringify(cells))
+    };
+    persistSavedDesigns([snapshot,...savedDesigns]);
+    setSavedDesignName("");
+    setCellStatus(`Saved "${name}" to the design workspace.`);
+  }
 
-    const started =
-      Date.now();
+  function loadSavedDesign(saved, enableOverflow=false) {
+    loadCandidateIntoEditor({
+      id:saved?.id,
+      profile_label:saved?.name || "Saved design",
+      k:(saved?.cells || []).length,
+      cells:JSON.parse(JSON.stringify(saved?.cells || []))
+    },enableOverflow);
+  }
 
-    const timer =
-      setInterval(() => {
-        setElapsed(
-          Math.floor(
-            (
-              Date.now()
-              - started
-            )
-            / 1000
-          )
-        );
-      }, 1000);
+  function deleteSavedDesign(id) {
+    persistSavedDesigns(savedDesigns.filter(d => d.id !== id));
+  }
 
-    return () =>
-      clearInterval(timer);
-  }, [runningAction]);
+  function loadCandidateIntoEditor(candidate, enableOverflow=false) {
+    const loaded = (candidate?.cells || []).map((c,idx) => ({
+      ...c,
+      id:`cell_${Date.now()}_${idx+1}`,
+      name:c.name || `Cell ${idx+1}`,
+      cross_cell_eligible:enableOverflow ? true : Boolean(c.cross_cell_eligible)
+    }));
+    setCells(loaded);
+    setStructuralAnalysis(null);
+    setPhase2Experiment(null);
+    setExperiment(null);
+    setPhase3Experiment(null);
+    setSensitivityResults(null);
+    setCellStatus(`Loaded ${candidate.profile_label || candidate.id} (${candidate.k} cells) into the editable design${enableOverflow ? " with two-way controlled-overflow reception enabled" : ""}. Review it, adjust if needed, then Save cell design before running experiments.`);
+    setTimeout(() => document.getElementById("manual-cell-design")?.scrollIntoView({behavior:"smooth",block:"start"}),50);
+  }
 
-  async function call(
-    path,
-    options,
-    actionLabel
-  ) {
-    setRunningAction(
-      actionLabel
-      || "Running"
-    );
-
-    setStatus(
-      actionLabel
-      || "Running"
-    );
-
+  async function runPhase2Experiment() {
+    if (!model || !phase2Ready || !activeArchitecture) return;
+    setPhase2Experiment(null);
+    setPhase2Busy(true);
+    setPhase2Status("Running paired Global vs Cellular vs Controlled Overflow experiment...");
     try {
-      const r = await fetch(
-        `${API}${path}`,
-        options
-      );
-
-      const data =
-        await r.json();
-
-      if (!r.ok) {
-        throw new Error(
-          data.detail
-          || "Request failed"
-        );
-      }
-
-      setStatus("Ready");
-      return data;
-
+      const experimentModel = {...model,cells};
+      const r = await fetch(`${API}/api/experiments/cellularization/phase2`, {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          model:experimentModel,
+          architecture_id:activeArchitecture.id,
+          cases:1200,
+          seed:900,
+          replications:12,
+          local_wait_threshold_minutes:Math.max(0,Number(overflowWaitThreshold) || 0),
+          max_overflow_fraction:Math.min(1,Math.max(0,(Number(maxOverflowPercent) || 0)/100))
+        })
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "Controlled-overflow experiment failed");
+      setPhase2Experiment(data);
+      setPhase2Status(`Completed ${data.replications || 0} paired replications.`);
+      setTimeout(() => document.getElementById("phase2-results")?.scrollIntoView({behavior:"smooth",block:"start"}),50);
+    } catch (e) {
+      setPhase2Status(`Experiment error: ${e.message || e}`);
     } finally {
-      setRunningAction(null);
+      setPhase2Busy(false);
     }
   }
 
-  async function loadModel() {
+  async function runOverflowSensitivity() {
+    if (!model || !phase2Ready || !activeArchitecture) return;
+    const thresholds = [0,15,30,60,120,1000000000];
+    setSensitivityResults(null);
+    setSensitivityBusy(true);
+    setSensitivityStatus("Running overflow-threshold sensitivity...");
     try {
-      setModel(
-        await call(
-          "/api/demo/model",
-          undefined,
-          "Loading model"
-        )
-      );
-
-    } catch(e) {
-      setStatus(e.message);
-    }
-  }
-
-
-  async function loadGeneralProcessSample() {
-    try {
-      setStatus("Loading General Process sample");
-
-      const response = await fetch(
-        "/samples/general_process_sample.csv"
-      );
-
-      if (!response.ok) {
-        throw new Error(
-          "Unable to load the General Process sample"
-        );
-      }
-
-      const blob = await response.blob();
-      const sampleFile = new File(
-        [blob],
-        "general_process_sample.csv",
-        { type:"text/csv" }
-      );
-
-      const form = new FormData();
-      form.append("file", sampleFile);
-      form.append("case_col", "CaseID");
-      form.append("activity_col", "Activity");
-      form.append("start_col", "StartTime");
-      form.append("end_col", "EndTime");
-      form.append("resource_col", "Resource");
-      form.append(
-        "sla_minutes",
-        String(model?.sla_minutes || 360)
-      );
-
-      const data = await call(
-        "/api/event-log/calibrate",
-        { method:"POST", body:form },
-        "Loading General Process sample"
-      );
-
-      setModel(data.model);
-      setCalibration(data.summary);
-      setSim(null);
-      setOpt(null);
-      setCmp(null);
-      setLogFile(null);
-      setLogPreview(null);
-      setStatus("General Process sample loaded");
-    } catch(e) {
-      setStatus(e.message);
-    }
-  }
-
-  async function runSimulation() {
-    try {
-      let m = model;
-
-      if (!m) {
-        m = await call(
-          "/api/demo/model",
-          undefined,
-          "Loading model"
-        );
-
-        setModel(m);
-      }
-
-      setSim(
-        await call(
-          "/api/simulate",
-          {
-            method:"POST",
-            headers:{
-              "Content-Type":
-                "application/json"
-            },
-            body:JSON.stringify({
-              model:m,
-              architecture_id:
-                "baseline",
-              design:{},
-              cases:1500,
-              seed:7
-            })
-          },
-          "Running simulation"
-        )
-      );
-
-    } catch(e) {
-      setStatus(e.message);
-    }
-  }
-
-  async function runOptimize() {
-    try {
-      setOpt(null);
-      setOptError("");
-
-      const result = await call(
-        "/api/optimize",
-        {
+      const experimentModel = {...model,cells};
+      const rows = [];
+      for (let i=0;i<thresholds.length;i++) {
+        const threshold = thresholds[i];
+        const label = threshold >= 1000000000 ? "No overflow" : `${threshold} min`;
+        setSensitivityStatus(`Running threshold ${label} (${i+1}/${thresholds.length})...`);
+        const r = await fetch(`${API}/api/experiments/cellularization/phase2`, {
           method:"POST",
           headers:{"Content-Type":"application/json"},
           body:JSON.stringify({
-            model:model || undefined,
-            robustness_target:0.90
+            model:experimentModel,
+            architecture_id:activeArchitecture.id,
+            cases:900,
+            seed:1300,
+            replications:8,
+            local_wait_threshold_minutes:threshold,
+            max_overflow_fraction:Math.min(1,Math.max(0,(Number(maxOverflowPercent) || 0)/100))
           })
-        },
-        "Running robust optimization"
-      );
-
-      if (!result || !Array.isArray(result.results)) {
-        const message = "Optimization completed, but the API response did not contain the expected results array.";
-        setOpt(result || {});
-        setOptError(message);
-        setStatus(message);
-        return;
-      }
-
-      setOpt(result);
-      setStatus(`Optimization complete · ${result.results.length} architecture result${result.results.length === 1 ? "" : "s"}`);
-
-      setTimeout(() => {
-        document.getElementById("optimization-immediate")?.scrollIntoView({
-          behavior:"smooth",
-          block:"center"
         });
-      }, 50);
-
-    } catch(e) {
-      const message = e?.message || "Optimization request failed";
-      setOptError(message);
-      setStatus(message);
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.detail || `Sensitivity run failed at ${label}`);
+        rows.push({
+          threshold_minutes:threshold,
+          label,
+          metrics:data.cellular_controlled_overflow?.metrics || {},
+          overflow:data.overflow || {},
+          replications:data.replications,
+          cases_per_replication:data.cases_per_replication
+        });
+      }
+      setSensitivityResults(rows);
+      setSensitivityStatus(`Completed ${rows.length} thresholds using common seeds.`);
+      setTimeout(() => document.getElementById("sensitivity-results")?.scrollIntoView({behavior:"smooth",block:"start"}),50);
+    } catch (e) {
+      setSensitivityStatus(`Experiment error: ${e.message || e}`);
+    } finally {
+      setSensitivityBusy(false);
     }
   }
 
-  async function runCompare() {
+  async function runPhase3Experiment() {
+    if (!model || !phase2Ready || !activeArchitecture) return;
+    setPhase3Experiment(null);
+    setPhase3Busy(true);
+    setPhase3Status("Running 3 × 2 operating-structure / scheduling matrix...");
     try {
-      const selected =
-        opt?.results?.[0];
-
-      if (!model || !selected?.best) {
-        setStatus(
-          "Run simulation and optimization before comparing AS-IS vs TO-BE"
-        );
-        return;
-      }
-
-      setCmp(
-        await call(
-          "/api/compare",
-          {
-            method:"POST",
-            headers:{
-              "Content-Type":"application/json"
-            },
-            body:JSON.stringify({
-              model,
-              baseline_architecture_id:
-                model.architectures?.[0]?.id,
-              future_architecture_id:
-                selected.architecture,
-              future_design:
-                selected.best.design,
-              cases:1200,
-              seed:2,
-              replications:20
-            })
-          },
-          "Comparing AS-IS vs TO-BE"
-        )
-      );
-
-    } catch(e) {
-      setStatus(e.message);
-    }
-  }
-
-
-  function getResourceKey(m) {
-    if (!m) return null;
-
-    return Object.keys(m).find(
-      k =>
-        Array.isArray(m[k])
-        && m[k].length
-        && typeof m[k][0] === "object"
-        && m[k][0] !== null
-        && Object.prototype.hasOwnProperty.call(
-          m[k][0],
-          "capacity"
-        )
-        && k !== "variables"
-    ) || null;
-  }
-
-  function resourceOptions(m) {
-    const key =
-      getResourceKey(m);
-
-    if (!key) return [];
-
-    return m[key]
-      .map(r => r.id)
-      .filter(Boolean);
-  }
-
-  function updateActivity(
-    id,
-    field,
-    value
-  ) {
-    setModel(prev => {
-      if (!prev) return prev;
-
-      return {
-        ...prev,
-        activities:
-          (prev.activities || []).map(a => {
-            if (a.id !== id) {
-              return a;
-            }
-
-            const numericServiceFields = new Set([
-              "mean_minutes",
-              "std_minutes",
-              "minimum_minutes",
-              "mode_minutes",
-              "maximum_minutes",
-              "scale"
-            ]);
-
-            if (numericServiceFields.has(field)) {
-              const service = {
-                ...a.service_time,
-                [field]:Number(value)
-              };
-
-              if (["minimum_minutes","mode_minutes","maximum_minutes"].includes(field)) {
-                const lo = Number(service.minimum_minutes ?? 0);
-                const md = Number(service.mode_minutes ?? lo);
-                const hi = Number(service.maximum_minutes ?? md);
-                if (lo <= md && md <= hi) {
-                  service.mean_minutes = (lo + md + hi) / 3;
-                  service.std_minutes = Math.sqrt(
-                    Math.max(
-                      0,
-                      (lo*lo + md*md + hi*hi - lo*md - lo*hi - md*hi) / 18
-                    )
-                  );
-                }
-              }
-
-              if (field === "scale" && a.model_source === "borrowed") {
-                const src = (prev.activities || []).find(x => x.id === service.source_activity_id);
-                if (src) {
-                  service.mean_minutes = Number(src.service_time?.mean_minutes || 0) * Number(service.scale || 1);
-                  service.std_minutes = Number(src.service_time?.std_minutes || 0) * Number(service.scale || 1);
-                }
-              }
-
-              return {
-                ...a,
-                service_time:service
-              };
-            }
-
-            if (field === "samples_text") {
-              const samples = String(value)
-                .split(/[\s,;]+/)
-                .map(Number)
-                .filter(x => Number.isFinite(x) && x > 0);
-              const mean = samples.length
-                ? samples.reduce((x,y) => x+y,0) / samples.length
-                : 0;
-              const variance = samples.length > 1
-                ? samples.reduce((sum,x) => sum + (x-mean)*(x-mean),0) / (samples.length-1)
-                : 0;
-              return {
-                ...a,
-                model_source:"manual_sample",
-                confidence:samples.length >= 30 ? "high" : (samples.length >= 5 ? "moderate" : (samples.length ? "low" : "insufficient")),
-                terminal:false,
-                service_time:{
-                  ...a.service_time,
-                  distribution:"empirical",
-                  samples_minutes:samples,
-                  mean_minutes:Math.max(mean,0.01),
-                  std_minutes:Math.sqrt(Math.max(variance,0))
-                }
-              };
-            }
-
-            if (field === "model_source") {
-              const source = value;
-              const baseService = {...a.service_time};
-              if (source === "terminal") {
-                return {
-                  ...a,
-                  model_source:"terminal",
-                  confidence:"defined",
-                  terminal:true,
-                  resource_pool:null,
-                  cost_per_hour:0,
-                  service_time:{
-                    ...baseService,
-                    distribution:"constant",
-                    mean_minutes:0.01,
-                    std_minutes:0
-                  }
-                };
-              }
-              if (source === "expert_estimate") {
-                const currentMean = Number(baseService.mean_minutes || 5);
-                const lo = Number(baseService.minimum_minutes ?? Math.max(0.01,currentMean*0.5));
-                const md = Number(baseService.mode_minutes ?? currentMean);
-                const hi = Number(baseService.maximum_minutes ?? currentMean*1.75);
-                const triMean = (lo + md + hi) / 3;
-                const triStd = Math.sqrt(Math.max(0,(lo*lo + md*md + hi*hi - lo*md - lo*hi - md*hi) / 18));
-                return {
-                  ...a,
-                  model_source:source,
-                  confidence:"moderate",
-                  terminal:false,
-                  service_time:{
-                    ...baseService,
-                    distribution:"triangular",
-                    minimum_minutes:lo,
-                    mode_minutes:md,
-                    maximum_minutes:hi,
-                    mean_minutes:triMean,
-                    std_minutes:triStd
-                  }
-                };
-              }
-              if (source === "manual_sample") {
-                return {
-                  ...a,
-                  model_source:source,
-                  confidence:(baseService.samples_minutes || []).length >= 5 ? "moderate" : "insufficient",
-                  terminal:false,
-                  service_time:{...baseService,distribution:"empirical",samples_minutes:baseService.samples_minutes || []}
-                };
-              }
-              if (source === "borrowed") {
-                return {
-                  ...a,
-                  model_source:source,
-                  confidence:"moderate",
-                  terminal:false,
-                  service_time:{...baseService,distribution:"borrowed",scale:Number(baseService.scale || 1)}
-                };
-              }
-              if (source === "fixed") {
-                return {
-                  ...a,
-                  model_source:source,
-                  confidence:"defined",
-                  terminal:false,
-                  service_time:{...baseService,distribution:"constant",std_minutes:0}
-                };
-              }
-              if (source === "unresolved") {
-                return {
-                  ...a,
-                  model_source:source,
-                  confidence:"insufficient",
-                  terminal:false,
-                  service_time:{...baseService,distribution:"unresolved"}
-                };
-              }
-              return {...a,model_source:source,terminal:false};
-            }
-
-            if (field === "source_activity_id") {
-              const src = (prev.activities || []).find(x => x.id === value);
-              const scale = Number(a.service_time?.scale || 1);
-              return {
-                ...a,
-                model_source:"borrowed",
-                confidence:src?.confidence === "high" ? "high" : "moderate",
-                terminal:false,
-                service_time:{
-                  ...a.service_time,
-                  distribution:"borrowed",
-                  source_activity_id:value,
-                  mean_minutes:src ? Number(src.service_time?.mean_minutes || 0) * scale : Number(a.service_time?.mean_minutes || 0),
-                  std_minutes:src ? Number(src.service_time?.std_minutes || 0) * scale : Number(a.service_time?.std_minutes || 0)
-                }
-              };
-            }
-
-            return {
-              ...a,
-              [field]:value
-            };
-          })
-      };
-    });
-  }
-
-  async function loadActivitySamplesFile(id,file) {
-    if (!file) return;
-    const text = await file.text();
-    updateActivity(id,"samples_text",text);
-  }
-
-  function updateTransition(
-    index,
-    field,
-    value
-  ) {
-    setModel(prev => {
-      if (!prev) return prev;
-
-      const selected =
-        activeArchitecture(prev);
-
-      if (!selected) {
-        return prev;
-      }
-
-      const architectures =
-        (prev.architectures || [])
-        .map(arch => {
-          if (
-            arch.id
-            !== selected.id
-          ) {
-            return arch;
-          }
-
-          const transitions = [
-            ...(arch.transitions || [])
-          ];
-
-          transitions[index] = {
-            ...transitions[index],
-            [field]:
-              field === "probability"
-              ? Number(value)
-              : value
-          };
-
-          return {
-            ...arch,
-            transitions
-          };
-        });
-
-      return {
-        ...prev,
-        architectures
-      };
-    });
-  }
-
-  function updateResource(
-    id,
-    field,
-    value
-  ) {
-    setModel(prev => {
-      if (!prev) return prev;
-
-      const key =
-        getResourceKey(prev);
-
-      if (!key) return prev;
-
-      const numericValue =
-        Number(value);
-
-      const next = {
-        ...prev,
-        [key]:
-          prev[key].map(r =>
-            r.id === id
-            ? {
-                ...r,
-                [field]:numericValue
-              }
-            : r
-          )
-      };
-
-      if (
-        field === "capacity"
-        && Array.isArray(prev.variables)
-      ) {
-        const variableName =
-          `resource_capacity__${id}`;
-
-        next.variables =
-          prev.variables.map(v =>
-            v.name === variableName
-            ? {
-                ...v,
-                value:numericValue,
-                lower:
-                  v.lower == null
-                  ? 1
-                  : Math.min(
-                      Number(v.lower),
-                      numericValue
-                    ),
-                upper:
-                  v.upper == null
-                  ? Math.max(2,numericValue*2)
-                  : Math.max(
-                      Number(v.upper),
-                      numericValue
-                    )
-              }
-            : v
-          );
-      }
-
-      return next;
-    });
-  }
-
-  function modelSkillColumns(m) {
-    const values = new Set();
-
-    (m?.agents || []).forEach(a =>
-      (a.skills || []).forEach(s => {
-        const v = String(s || "").trim();
-        if (v) values.add(v);
-      })
-    );
-
-    (m?.resources || []).forEach(r =>
-      (r.skills || []).forEach(s => {
-        const v = String(s || "").trim();
-        if (v) values.add(v);
-      })
-    );
-
-    (m?.activities || []).forEach(a =>
-      (a.required_skills || []).forEach(s => {
-        const v = String(s || "").trim();
-        if (v) values.add(v);
-      })
-    );
-
-    return Array.from(values).sort((a,b) => a.localeCompare(b));
-  }
-
-  function skillMatrixRows(m) {
-    if (Array.isArray(m?.agents) && m.agents.length) {
-      return m.agents.map(a => ({
-        ...a,
-        _matrixType:"agent"
-      }));
-    }
-
-    return (m?.resources || []).map(r => ({
-      ...r,
-      resource_pool:r.id,
-      _matrixType:"pool"
-    }));
-  }
-
-  function recomputeSkillEligibility(next) {
-    const resources = Array.isArray(next?.resources) ? next.resources : [];
-    const agents = Array.isArray(next?.agents) ? next.agents : [];
-
-    let updatedResources = resources;
-
-    if (agents.length) {
-      const skillsByPool = {};
-      agents
-        .filter(a => a.active !== false)
-        .forEach(a => {
-          if (!skillsByPool[a.resource_pool]) {
-            skillsByPool[a.resource_pool] = new Set();
-          }
-          (a.skills || []).forEach(skill =>
-            skillsByPool[a.resource_pool].add(skill)
-          );
-        });
-
-      updatedResources = resources.map(r => ({
-        ...r,
-        skills:Array.from(
-          skillsByPool[r.id] || new Set(r.skills || [])
-        ).sort((a,b) => String(a).localeCompare(String(b)))
-      }));
-    }
-
-    const poolSkillMap = Object.fromEntries(
-      updatedResources.map(r => [r.id, new Set(r.skills || [])])
-    );
-
-    return {
-      ...next,
-      resources:updatedResources,
-      activities:(next.activities || []).map(a => {
-        const required = Array.isArray(a.required_skills)
-          ? a.required_skills.filter(Boolean)
-          : [];
-        if (!required.length) return a;
-
-        let eligible;
-
-        if (agents.length) {
-          eligible = Array.from(new Set(
-            agents
-              .filter(agent =>
-                agent.active !== false
-                && required.every(skill =>
-                  (agent.skills || []).includes(skill)
-                )
-              )
-              .map(agent => agent.resource_pool)
-          )).sort();
-        } else {
-          eligible = updatedResources
-            .filter(r => required.every(skill => poolSkillMap[r.id]?.has(skill)))
-            .map(r => r.id);
-        }
-
-        return {
-          ...a,
-          eligible_resource_pools:eligible,
-          routing_policy:eligible.length > 1 || required.length
-            ? "earliest_available_skill"
-            : a.routing_policy
-        };
-      })
-    };
-  }
-
-  function toggleMatrixSkill(rowId,skill) {
-    setModel(prev => {
-      if (!prev) return prev;
-
-      if (Array.isArray(prev.agents) && prev.agents.length) {
-        const next = {
-          ...prev,
-          agents:prev.agents.map(a => {
-            if (a.id !== rowId) return a;
-            const current = new Set(a.skills || []);
-            const proficiency = {...(a.skill_proficiency || {})};
-
-            if (current.has(skill)) {
-              current.delete(skill);
-              delete proficiency[skill];
-            } else {
-              current.add(skill);
-              proficiency[skill] = 1.0;
-            }
-
-            return {
-              ...a,
-              skills:Array.from(current).sort((x,y) => String(x).localeCompare(String(y))),
-              skill_proficiency:proficiency
-            };
-          })
-        };
-        return recomputeSkillEligibility(next);
-      }
-
-      const next = {
-        ...prev,
-        resources:(prev.resources || []).map(r => {
-          if (r.id !== rowId) return r;
-          const current = new Set(r.skills || []);
-          if (current.has(skill)) current.delete(skill);
-          else current.add(skill);
-          return {
-            ...r,
-            skills:Array.from(current).sort((a,b) => String(a).localeCompare(String(b)))
-          };
+      const experimentModel = {...model,cells};
+      const r = await fetch(`${API}/api/experiments/cellularization/phase3`, {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          model:experimentModel,
+          architecture_id:activeArchitecture.id,
+          cases:800,
+          seed:1100,
+          replications:8,
+          local_wait_threshold_minutes:Math.max(0,Number(overflowWaitThreshold) || 0),
+          max_overflow_fraction:Math.min(1,Math.max(0,(Number(maxOverflowPercent) || 0)/100))
         })
-      };
-      return recomputeSkillEligibility(next);
-    });
-    setSim(null);
-    setOpt(null);
-    setCmp(null);
-  }
-
-  function updateAgentProficiency(agentId,skill,value) {
-    const numeric = Math.min(1,Math.max(0.25,Number(value) || 1));
-    setModel(prev => {
-      if (!prev) return prev;
-      return recomputeSkillEligibility({
-        ...prev,
-        agents:(prev.agents || []).map(a =>
-          a.id === agentId
-          ? {
-              ...a,
-              skill_proficiency:{
-                ...(a.skill_proficiency || {}),
-                [skill]:numeric
-              }
-            }
-          : a
-        )
       });
-    });
-    setSim(null);
-    setOpt(null);
-    setCmp(null);
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "Scheduling matrix experiment failed");
+      setPhase3Experiment(data);
+      setPhase3Status(`Completed ${data.replications || 0} paired replications across six scenarios.`);
+      setTimeout(() => document.getElementById("phase3-results")?.scrollIntoView({behavior:"smooth",block:"start"}),50);
+    } catch (e) {
+      setPhase3Status(`Experiment error: ${e.message || e}`);
+    } finally {
+      setPhase3Busy(false);
+    }
   }
 
-  function addActivity() {
-    setModel(prev => {
-      if (
-        !prev
-        || !(prev.activities || []).length
-      ) {
-        return prev;
-      }
-
-      const base =
-        JSON.parse(
-          JSON.stringify(
-            prev.activities[0]
-          )
-        );
-
-      const id =
-        `activity_${Date.now()}`;
-
-      base.id = id;
-      base.name =
-        "New Activity";
-      base.model_source = "unresolved";
-      base.confidence = "insufficient";
-      base.terminal = false;
-
-      base.service_time = {
-        ...(base.service_time || {}),
-        distribution:"unresolved",
-        mean_minutes:5,
-        std_minutes:0,
-        minimum_minutes:null,
-        mode_minutes:null,
-        maximum_minutes:null,
-        samples_minutes:[],
-        source_activity_id:null,
-        scale:1
-      };
-
-      const resources =
-        resourceOptions(prev);
-
-      if (
-        resources.length
-        && Object.prototype
-          .hasOwnProperty.call(
-            base,
-            "resource_pool"
-          )
-      ) {
-        base.resource_pool =
-          resources[0];
-      }
-
-      const architectures =
-        Array.isArray(
-          prev.architectures
-        )
-        ? prev.architectures.map(
-            a => ({
-              ...a,
-              enabled_activities:
-                Array.isArray(
-                  a.enabled_activities
-                )
-                ? [
-                    ...a
-                      .enabled_activities,
-                    id
-                  ]
-                : a
-                  .enabled_activities
-            })
-          )
-        : prev.architectures;
-
-      return {
-        ...prev,
-        activities:[
-          ...prev.activities,
-          base
-        ],
-        architectures
-      };
-    });
-  }
-
-  function removeActivity(id) {
-    setModel(prev => {
-      if (
-        !prev
-        || id
-          === prev.start_activity
-        || id
-          === prev.end_activity
-      ) {
-        return prev;
-      }
-
-      return {
-        ...prev,
-        activities:
-          (prev.activities || []).filter(
-            a => a.id !== id
-          ),
-        architectures:
-          Array.isArray(
-            prev.architectures
-          )
-          ? prev.architectures.map(
-              a => ({
-                ...a,
-                enabled_activities:
-                  Array.isArray(
-                    a.enabled_activities
-                  )
-                  ? a
-                    .enabled_activities
-                    .filter(
-                      x => x !== id
-                    )
-                  : a
-                    .enabled_activities,
-                transitions:
-                  Array.isArray(
-                    a.transitions
-                  )
-                  ? a.transitions.filter(
-                      t =>
-                        t.source !== id
-                        && t.target !== id
-                    )
-                  : []
-              })
-            )
-          : prev.architectures
-      };
-    });
-  }
-
-  function addTransition() {
-    setModel(prev => {
-      if (!prev) {
-        return prev;
-      }
-
-      const selected =
-        activeArchitecture(prev);
-
-      if (!selected) {
-        return prev;
-      }
-
-      const t =
-        selected.transitions?.length
-        ? JSON.parse(
-            JSON.stringify(
-              selected.transitions[0]
-            )
-          )
-        : {
-            source:
-              prev.start_activity,
-            target:
-              prev.end_activity,
-            probability:1
-          };
-
-      t.source =
-        prev.start_activity;
-
-      t.target =
-        prev.end_activity;
-
-      t.probability = 1;
-
-      return {
-        ...prev,
-        architectures:
-          (prev.architectures || [])
-          .map(arch =>
-            arch.id === selected.id
-            ? {
-                ...arch,
-                transitions:[
-                  ...(arch.transitions || []),
-                  t
-                ]
-              }
-            : arch
-          )
-      };
-    });
-  }
-
-  function removeTransition(
-    index
-  ) {
-    setModel(prev => {
-      if (!prev) return prev;
-
-      const selected =
-        activeArchitecture(prev);
-
-      if (!selected) {
-        return prev;
-      }
-
-      return {
-        ...prev,
-        architectures:
-          (prev.architectures || [])
-          .map(arch =>
-            arch.id === selected.id
-            ? {
-                ...arch,
-                transitions:
-                  (arch.transitions || [])
-                  .filter(
-                    (_,i) => i !== index
-                  )
-              }
-            : arch
-          )
-      };
-    });
-  }
-
-  function downloadModel() {
-    if (!model) return;
-
-    const blob =
-      new Blob(
-        [
-          JSON.stringify(
-            model,
-            null,
-            2
-          )
-        ],
-        {
-          type:
-            "application/json"
-        }
-      );
-
-    const url =
-      URL.createObjectURL(
-        blob
-      );
-
-    const a =
-      document.createElement(
-        "a"
-      );
-
-    a.href = url;
-    a.download =
-      "process_model.json";
-
-    document.body
-      .appendChild(a);
-
-    a.click();
-    a.remove();
-
-    URL.revokeObjectURL(
-      url
-    );
-  }
-
-
-  async function loadContactCenterSample() {
+  async function runPhase1Experiment() {
+    if (!model || !phase1Ready || !activeArchitecture) return;
+    setExperiment(null);
+    setExperimentBusy(true);
+    setExperimentStatus("Running paired Global vs Cellular / No Overflow experiment...");
     try {
-      setStatus(
-        "Loading Contact Center sample workbook"
-      );
-
-      const response = await fetch(
-        "/samples/contact_center_sample.xlsx"
-      );
-
-      if (!response.ok) {
-        throw new Error(
-          "Unable to load the sample workbook"
-        );
-      }
-
-      const blob = await response.blob();
-      const form = new FormData();
-
-      form.append(
-        "file",
-        new File(
-          [blob],
-          "contact_center_sample.xlsx",
-          {
-            type:
-              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-          }
-        )
-      );
-
-      const data = await call(
-        "/api/contact-center/import",
-        { method:"POST", body:form },
-        "Loading Contact Center sample"
-      );
-
-      setModel(data.model);
-      setCalibration(data.summary);
-      setSim(null);
-      setOpt(null);
-      setCmp(null);
-      setContactCenterPreview(null);
-      setLogFile(null);
-      setLogPreview(null);
-      setStatus("Contact Center sample loaded");
-    } catch(e) {
-      setStatus(e.message);
-    }
-  }
-
-  async function previewContactCenterWorkbook() {
-    if (!logFile) {
-      setStatus(
-        "Choose a Contact Center Excel workbook first"
-      );
-      return;
-    }
-
-    try {
-      const form = new FormData();
-      form.append("file", logFile);
-
-      const data = await call(
-        "/api/contact-center/preview",
-        { method:"POST", body:form },
-        "Validating Contact Center workbook"
-      );
-
-      setContactCenterPreview(data);
-      setStatus(
-        "Contact Center workbook is valid"
-      );
-    } catch(e) {
-      setContactCenterPreview(null);
-      setStatus(e.message);
-    }
-  }
-
-  async function importContactCenterWorkbook() {
-    if (!logFile) {
-      setStatus(
-        "Choose a Contact Center Excel workbook first"
-      );
-      return;
-    }
-
-    try {
-      const form = new FormData();
-      form.append("file", logFile);
-
-      const data = await call(
-        "/api/contact-center/import",
-        { method:"POST", body:form },
-        "Building Contact Center model"
-      );
-
-      setModel(data.model);
-      setCalibration(data.summary);
-      setSim(null);
-      setOpt(null);
-      setCmp(null);
-      setContactCenterPreview(null);
-      setStatus(
-        "Contact Center model loaded"
-      );
-    } catch(e) {
-      setStatus(e.message);
-    }
-  }
-
-  async function previewEventLog() {
-    if (!logFile) {
-      setStatus(
-        "Choose an event-log file first"
-      );
-      return;
-    }
-
-    try {
-      const form =
-        new FormData();
-
-      form.append(
-        "file",
-        logFile
-      );
-
-      const data =
-        await call(
-          "/api/event-log/preview",
-          {
-            method:"POST",
-            body:form
-          },
-          "Inspecting event log"
-        );
-
-      setLogPreview(data);
-
-      setMapping({
-        case_id:
-          data.guesses
-          ?.case_id || "",
-        activity:
-          data.guesses
-          ?.activity || "",
-        start_time:
-          data.guesses
-          ?.start_time || "",
-        end_time:
-          data.guesses
-          ?.end_time || "",
-        resource:
-          data.guesses
-          ?.resource || ""
+      const experimentModel = {...model,cells};
+      const r = await fetch(`${API}/api/experiments/cellularization/phase1`, {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          model:experimentModel,
+          architecture_id:activeArchitecture.id,
+          cases:1200,
+          seed:700,
+          replications:12
+        })
       });
-
-    } catch(e) {
-      setStatus(e.message);
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "Cellularization experiment failed");
+      setExperiment(data);
+      setExperimentStatus(`Completed ${data.replications || 0} paired replications.`);
+      setTimeout(() => document.getElementById("phase1-results")?.scrollIntoView({behavior:"smooth",block:"start"}), 50);
+    } catch (e) {
+      setExperimentStatus(`Experiment error: ${e.message || e}`);
+    } finally {
+      setExperimentBusy(false);
     }
   }
 
-  async function calibrateEventLog() {
-    if (
-      !logFile
-      || !mapping.case_id
-      || !mapping.activity
-      || !mapping.start_time
-    ) {
-      setStatus(
-        "Map Case ID, Activity, and Start Time first"
-      );
+  function saveCells() {
+    const over = (model?.resources || []).filter(r => (capacityUse[r.id] || 0) > Number(r.capacity || 0));
+    if (over.length) {
+      setCellStatus(`Cannot save: allocated capacity exceeds baseline for ${over.map(r => r.name || r.id).join(", ")}.`);
       return;
     }
-
-    try {
-      const form =
-        new FormData();
-
-      form.append(
-        "file",
-        logFile
-      );
-
-      form.append(
-        "case_col",
-        mapping.case_id
-      );
-
-      form.append(
-        "activity_col",
-        mapping.activity
-      );
-
-      form.append(
-        "start_col",
-        mapping.start_time
-      );
-
-      form.append(
-        "end_col",
-        mapping.end_time || ""
-      );
-
-      form.append(
-        "resource_col",
-        mapping.resource || ""
-      );
-
-      form.append(
-        "sla_minutes",
-        String(
-          model?.sla_minutes
-          || 360
-        )
-      );
-
-      const data =
-        await call(
-          "/api/event-log/calibrate",
-          {
-            method:"POST",
-            body:form
-          },
-          "Calibrating event log"
-        );
-
-      setModel(
-        data.model
-      );
-
-      setCalibration(
-        data.summary
-      );
-
-      setSim(null);
-      setOpt(null);
-      setCmp(null);
-
-    } catch(e) {
-      setStatus(e.message);
-    }
+    const nextModel = {...model,cells};
+    setModel(nextModel);
+    localStorage.setItem("pds_cellularization_cells",JSON.stringify(cells));
+    localStorage.setItem("pds_cellularization_model",JSON.stringify(nextModel));
+    setCellStatus(`Saved ${cells.length} cell definition${cells.length === 1 ? "" : "s"} into the current model.`);
   }
-
-  const busy =
-    Boolean(runningAction);
 
   return (
-    <main style={{
-      maxWidth:1180,
-      margin:"0 auto",
-      padding:"34px 22px 60px"
-    }}>
-      <div style={{
-        display:"flex",
-        justifyContent:
-          "space-between",
-        gap:20,
-        alignItems:"flex-start",
-        flexWrap:"wrap"
-      }}>
+    <main style={{maxWidth:1180,margin:"0 auto",padding:"28px 20px 60px",fontFamily:"Arial, Helvetica, sans-serif",color:"#0f172a"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
         <div>
-          <div style={{
-            fontSize:13,
-            fontWeight:700,
-            color:"#4f46e5",
-            letterSpacing:".08em"
-          }}>
-            PROCESS DIGITAL TWIN
-          </div>
-
-          <h1 style={{
-            fontSize:38,
-            margin:"8px 0 8px"
-          }}>
+          <div style={{fontSize:12,fontWeight:800,letterSpacing:".08em",textTransform:"uppercase",color:"#4f46e5"}}>
             Process Design Space Explorer
-          </h1>
-
-          <p style={{
-            maxWidth:900,
-            color:"#4b5563",
-            lineHeight:1.55
-          }}>
-            Statistical robust-manifold optimization
-            using common random numbers, demand-normalized
-            flow balance, confidence intervals, and explicit
-            robustness-target enforcement.
-          </p>
+          </div>
+          <h1 style={{margin:"6px 0 4px"}}>Cellularization &amp; Scheduling</h1>
+          <div style={muted}>Design and compare operating structures without changing the underlying process architecture.</div>
         </div>
-
-        <div style={{
-          fontSize:13,
-          color:"#6b7280"
-        }}>
-          Status: {status}
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          <a href="/" style={{padding:"8px 11px",borderRadius:8,border:"1px solid #cbd5e1",color:"#0f172a",fontSize:13,fontWeight:700,textDecoration:"none"}}>Workspace</a>
+          <a href="/guide" style={{padding:"8px 11px",borderRadius:8,border:"1px solid #cbd5e1",color:"#0f172a",fontSize:13,fontWeight:700,textDecoration:"none"}}>Feature &amp; User Guide</a>
+          <a href="/manual-svd" style={{padding:"8px 11px",borderRadius:8,border:"1px solid #cbd5e1",color:"#0f172a",fontSize:13,fontWeight:700,textDecoration:"none"}}>Manual SVD</a>
         </div>
       </div>
 
-      {busy &&
-        <div style={{
-          marginTop:16,
-          padding:"14px 16px",
-          borderRadius:12,
-          border:
-            "1px solid #c7d2fe",
-          background:"#eef2ff",
-          display:"flex",
-          alignItems:"center",
-          gap:12
-        }}>
-          <div style={{
-            width:18,
-            height:18,
-            border:
-              "3px solid #c7d2fe",
-            borderTop:
-              "3px solid #4f46e5",
-            borderRadius:"50%",
-            animation:
-              "spin 0.8s linear infinite"
-          }} />
+      <div style={{marginTop:12,fontSize:13,color:"#64748b"}}>Status: {status}</div>
 
-          <div>
-            <div style={{
-              fontWeight:700,
-              color:"#312e81"
-            }}>
-              {runningAction}
-            </div>
-
-            <div style={{
-              fontSize:13,
-              color:"#4f46e5",
-              marginTop:2
-            }}>
-              Still running · elapsed {
-                formatElapsed(
-                  elapsed
-                )
-              }
-              {runningAction
-                === "Running robust optimization"
-                ? " · replicated optimization can take several minutes"
-                : ""}
-            </div>
-          </div>
-        </div>
-      }
-
-      <style jsx global>{`
-        @keyframes spin {
-          from { transform: rotate(0deg); }
-          to { transform: rotate(360deg); }
-        }
-      `}</style>
-
-      <div style={{
-        marginTop:10,
-        marginBottom:6
-      }}>
-        <a
-          href="/about.html"
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{
-            color:"#4f46e5",
-            fontWeight:700,
-            textDecoration:"none"
-          }}
-        >
-          About this app: features, algorithms, and technical overview →
-        </a>
-      </div>
-
-
-      <section style={{
-        ...card,
-        marginTop:18
-      }}>
-        <div style={{
-          fontSize:11,
-          fontWeight:800,
-          letterSpacing:".06em",
-          textTransform:"uppercase",
-          color:"#6366f1",
-          marginBottom:6
-        }}>
-          Step 1 · Choose workflow class
-        </div>
-
-        <h2 style={{margin:"0 0 6px"}}>
-          Build the process model
-        </h2>
-
-        <p style={{
-          marginTop:0,
-          color:"#4b5563",
-          lineHeight:1.5
-        }}>
-          Choose the application type first. The data template,
-          importer, and model assumptions change for that workflow class.
-        </p>
-
-        <div style={{
-          display:"grid",
-          gridTemplateColumns:"minmax(220px,320px) 1fr",
-          gap:14,
-          alignItems:"end",
-          marginTop:16
-        }}>
-          <label style={{
-            fontSize:12,
-            color:"#475569",
-            fontWeight:700
-          }}>
-            Workflow class
-            <select
-              value={workflowClass}
-              onChange={e => {
-                const next =
-                  e.target.value;
-                setWorkflowClass(next);
-                setLogFile(null);
-                setLogPreview(null);
-                setContactCenterPreview(null);
-                setCalibration(null);
-              }}
-              style={{
-                display:"block",
-                width:"100%",
-                marginTop:6
-              }}
-            >
-              <option value="general">
-                General Process
-              </option>
-              <option value="contact_center">
-                Contact Center
-              </option>
-            </select>
-          </label>
-
-          <div style={{
-            fontSize:13,
-            color:"#64748b",
-            lineHeight:1.45
-          }}>
-            {workflowClass === "contact_center"
-              ? "Contact Center uses a standard multi-sheet Excel workbook for events, agent skills, staffing, and interval arrivals."
-              : "General Process uses event logs for activities, timestamps, resources, routing, service-time calibration, and hybrid manual modeling."}
-          </div>
-        </div>
-      </section>
-
-      {workflowClass === "contact_center" &&
-        <section style={{
-          ...card,
-          marginTop:18
-        }}>
-          <h2 style={{marginTop:0}}>
-            Contact Center Excel import
-          </h2>
-
-          <p style={{
-            color:"#4b5563",
-            lineHeight:1.5
-          }}>
-            Use the standard multi-sheet workbook. The app validates
-            events, agent skills, staffing profiles, and interval arrivals,
-            then converts them into the common process digital-twin model.
-          </p>
-
-          <div style={{
-            display:"flex",
-            gap:10,
-            flexWrap:"wrap",
-            marginBottom:14
-          }}>
-            <button
-              disabled={busy}
-              style={{
-                ...buttonStyle,
-                opacity:busy ? 0.55 : 1
-              }}
-              onClick={loadContactCenterSample}
-            >
-              Load sample Contact Center
-            </button>
-
-            <a
-              href="/templates/contact_center_template.xlsx"
-              download
-              style={buttonStyle}
-            >
-              Download blank Excel template
-            </a>
-
-            <a
-              href="/samples/contact_center_sample.xlsx"
-              download
-              style={buttonStyle}
-            >
-              Download sample Excel workbook
-            </a>
-          </div>
-
-          <div style={{
-            padding:"12px 14px",
-            background:"#f8fafc",
-            border:"1px solid #e2e8f0",
-            borderRadius:10,
-            fontSize:12,
-            color:"#475569",
-            marginBottom:14
-          }}>
-            Required sheets: <b>Events</b>, <b>Agent_Skills</b>,
-            {" "}<b>Staffing</b>, <b>Arrivals</b>. Optional:
-            {" "}<b>Settings</b>.
-          </div>
-
-          <div style={{
-            display:"flex",
-            gap:10,
-            flexWrap:"wrap",
-            alignItems:"center"
-          }}>
-            <input
-              type="file"
-              accept=".xlsx,.xls"
-              disabled={busy}
-              onChange={e => {
-                setLogFile(
-                  e.target.files?.[0] || null
-                );
-                setContactCenterPreview(null);
-                setCalibration(null);
-              }}
-            />
-
-            <button
-              disabled={busy || !logFile}
-              style={{
-                ...buttonStyle,
-                opacity:
-                  busy || !logFile
-                  ? 0.55
-                  : 1
-              }}
-              onClick={
-                previewContactCenterWorkbook
-              }
-            >
-              Validate workbook
-            </button>
-
-            <button
-              disabled={busy || !logFile}
-              style={{
-                ...buttonStyle,
-                opacity:
-                  busy || !logFile
-                  ? 0.55
-                  : 1
-              }}
-              onClick={
-                importContactCenterWorkbook
-              }
-            >
-              Build Contact Center model
-            </button>
-          </div>
-
-          {contactCenterPreview &&
-            <div style={{
-              marginTop:14,
-              fontSize:13,
-              color:"#166534",
-              fontWeight:700
-            }}>
-              Workbook valid · {
-                Object.entries(
-                  contactCenterPreview.sheets || {}
-                ).map(
-                  ([name,info]) =>
-                    `${name}: ${info.rows} rows`
-                ).join(" · ")
-              }
-            </div>
-          }
-
-          {calibration?.workflow_class === "contact_center" &&
-            <div style={{
-              marginTop:14,
-              fontSize:13,
-              color:"#475569",
-              lineHeight:1.6
-            }}>
-              Imported {calibration.interactions} interaction(s),
-              {" "}{calibration.service_legs} service leg(s),
-              {" "}{calibration.activities} workflow activity/queue(s),
-              and {calibration.resource_pools} resource pool(s).
-            </div>
-          }
-        </section>
-      }
-
-      {workflowClass === "general" &&
-      <section style={{
-        ...card,
-        marginTop:18
-      }}>
-        <h2 style={{
-          marginTop:0
-        }}>
-          General Process data
-        </h2>
-
-        <p style={{
-          color:"#4b5563",
-          lineHeight:1.5
-        }}>
-          Upload a CSV or Excel event log. The app discovers
-          activities, routing probabilities, rework loops,
-          service-time estimates, arrival rate, and observed
-          resource counts, then creates an editable process model.
-        </p>
-
-        <div style={{
-          display:"flex",
-          gap:10,
-          flexWrap:"wrap",
-          marginBottom:14
-        }}>
-          <button
-            disabled={busy}
-            style={{
-              ...buttonStyle,
-              opacity:busy ? 0.55 : 1
-            }}
-            onClick={loadModel}
-          >
-            Load demo model
-          </button>
-
-          <button
-            disabled={busy}
-            style={{
-              ...buttonStyle,
-              opacity:busy ? 0.55 : 1
-            }}
-            onClick={loadGeneralProcessSample}
-          >
-            Load sample General Process
-          </button>
-
-          <a
-            href="/templates/general_process_template.csv"
-            download
-            style={buttonStyle}
-          >
-            Download blank CSV template
-          </a>
-
-          <a
-            href="/samples/general_process_sample.csv"
-            download
-            style={buttonStyle}
-          >
-            Download sample CSV
-          </a>
-        </div>
-
-        <div style={{
-          display:"flex",
-          gap:10,
-          flexWrap:"wrap",
-          alignItems:"center"
-        }}>
-          <input
-            type="file"
-            accept=".csv,.xlsx,.xls"
-            disabled={busy}
-            onChange={
-              e => {
-                setLogFile(
-                  e.target.files?.[0]
-                  || null
-                );
-                setLogPreview(null);
-                setCalibration(null);
-              }
-            }
-          />
-
-          <button
-            disabled={
-              busy || !logFile
-            }
-            style={{
-              ...buttonStyle,
-              opacity:
-                busy || !logFile
-                ? 0.55
-                : 1
-            }}
-            onClick={
-              previewEventLog
-            }
-          >
-            Inspect columns
-          </button>
-        </div>
-
-        {logPreview &&
-          <>
-            <div style={{
-              marginTop:14,
-              fontSize:13,
-              color:"#6b7280"
-            }}>
-              {logPreview.rows} rows · {
-                logPreview.columns.length
-              } columns · {
-                logPreview.filename
-              }
-            </div>
-
-            <div style={{
-              display:"grid",
-              gridTemplateColumns:
-                "repeat(auto-fit,minmax(180px,1fr))",
-              gap:10,
-              marginTop:12
-            }}>
-              {[
-                ["case_id","Case ID",true],
-                ["activity","Activity",true],
-                ["start_time","Start time",true],
-                ["end_time","End time",false],
-                ["resource","Resource",false]
-              ].map(
-                ([key,label,required]) =>
-                  <label
-                    key={key}
-                    style={{
-                      fontSize:12,
-                      color:"#4b5563"
-                    }}
-                  >
-                    {label}{
-                      required
-                      ? " *"
-                      : ""
-                    }
-
-                    <select
-                      value={
-                        mapping[key]
-                      }
-                      onChange={
-                        e =>
-                          setMapping(
-                            prev => ({
-                              ...prev,
-                              [key]:
-                                e
-                                .target
-                                .value
-                            })
-                          )
-                      }
-                      style={{
-                        width:"100%",
-                        marginTop:5,
-                        padding:8
-                      }}
-                    >
-                      <option value="">
-                        -- not mapped --
-                      </option>
-
-                      {
-                        logPreview
-                        .columns
-                        .map(c =>
-                          <option
-                            key={c}
-                            value={c}
-                          >
-                            {c}
-                          </option>
-                        )
-                      }
-                    </select>
-                  </label>
-              )}
-            </div>
-
-            <button
-              disabled={busy}
-              style={{
-                ...buttonStyle,
-                marginTop:12,
-                opacity:
-                  busy ? 0.55 : 1
-              }}
-              onClick={
-                calibrateEventLog
-              }
-            >
-              Calibrate and load model
-            </button>
-          </>
-        }
-
-        {calibration &&
-          <div style={{
-            ...card,
-            background:"#fafafa",
-            marginTop:14
-          }}>
-            <b>
-              Calibrated AS-IS digital twin
-            </b>
-
-            <div style={{
-              display:"grid",
-              gridTemplateColumns:
-                "repeat(auto-fit,minmax(150px,1fr))",
-              gap:10,
-              marginTop:12
-            }}>
-              <Metric
-                label="Cases"
-                value={calibration.cases}
-              />
-              <Metric
-                label="Activities"
-                value={calibration.activities}
-              />
-              <Metric
-                label="Resource pools"
-                value={calibration.resource_pools}
-              />
-              <Metric
-                label="Arrival rate / hr"
-                value={fmtMax2(
-                  calibration.arrival_rate_per_hour
-                )}
-              />
-              <Metric
-                label="Observed P95 cycle"
-                value={`${fmtMax2(
-                  calibration.p95_cycle_minutes_observed
-                )} min`}
-              />
-              <Metric
-                label="Observed SLA"
-                value={fmtPct(
-                  calibration.sla_attainment_observed
-                )}
-              />
-              <Metric
-                label="Cases with rework"
-                value={fmtPct(
-                  calibration.rework_case_rate
-                )}
-              />
-              <Metric
-                label="Top variant share"
-                value={fmtPct(
-                  calibration.most_common_variant_share
-                )}
-              />
-              <Metric
-                label="Structural bottleneck"
-                value={
-                  calibration.bottleneck_resource
-                  || "none"
-                }
-              />
-              <Metric
-                label="Max utilization"
-                value={fmtPct(
-                  calibration.max_resource_utilization
-                  || 0
-                )}
-              />
-              <Metric
-                label="Capacity state"
-                value={
-                  calibration.capacity_status
-                  || "n/a"
-                }
-              />
-            </div>
-
-            <div style={{
-              fontSize:12,
-              color:"#6b7280",
-              marginTop:10
-            }}>
-              Start activity: {calibration.start_activity}. The calibrated
-              model now contains generic resource pools and capacity design
-              variables and is used directly by Simulation and Optimization.
-            </div>
-
-            {unresolvedActivities.length > 0 &&
-              <div style={{marginTop:12,padding:"10px 12px",background:"#fff7ed",border:"1px solid #fed7aa",borderRadius:8,fontSize:12,color:"#9a3412"}}>
-                <b>{unresolvedActivities.length} activity{unresolvedActivities.length === 1 ? "" : "ies"} {unresolvedActivities.length === 1 ? "has" : "have"} no usable duration observations.</b> {unresolvedActivities.map(a => a.name || a.id).join(", ")}. Select each highlighted activity in the Visual Process Modeler and define it as terminal, triangular, manual-sample, borrowed, or fixed before simulation/optimization.
-              </div>
-            }
-
-            {liveActivityModels.length > 0 &&
-              <div style={{marginTop:18}}>
-                <div style={{fontWeight:800,marginBottom:8}}>Activity modeling provenance</div>
-                <div style={{overflowX:"auto"}}>
-                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                    <thead><tr><th align="left">Activity</th><th align="right">Duration observations</th><th align="left">Model source</th><th align="left">Simulation distribution</th><th align="left">Confidence</th></tr></thead>
-                    <tbody>
-                      {liveActivityModels.map(x =>
-                        <tr key={x.activity_id} style={{background:x.model_source === "unresolved" ? "#fff7ed" : "transparent"}}>
-                          <td style={{padding:"6px 4px"}}>{x.activity}</td>
-                          <td align="right">{x.model_source === "terminal" ? "—" : x.service_observations}</td>
-                          <td style={{paddingLeft:10}}>{x.model_source}</td>
-                          <td>{x.distribution}</td>
-                          <td style={{fontWeight:x.confidence === "insufficient" ? 800 : 500,color:x.confidence === "insufficient" ? "#9a3412" : "#475569"}}>{x.confidence}</td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            }
-
-            {Array.isArray(calibration.top_variants) && calibration.top_variants.length > 0 &&
-              <div style={{marginTop:18}}>
-                <div style={{fontWeight:800,marginBottom:8}}>Top process variants</div>
-                <div style={{overflowX:"auto"}}>
-                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                    <thead><tr><th align="left">#</th><th align="left">Path</th><th align="right">Cases</th><th align="right">Share</th><th align="right">Mean cycle</th><th align="right">P95 cycle</th><th align="left">Rework</th></tr></thead>
-                    <tbody>
-                      {calibration.top_variants.slice(0,8).map(v =>
-                        <tr key={v.rank}>
-                          <td style={{padding:"6px 4px"}}>{v.rank}</td>
-                          <td style={{padding:"6px 4px",minWidth:280}}>{v.path}</td>
-                          <td align="right">{v.cases}</td>
-                          <td align="right">{fmtPct(v.share)}</td>
-                          <td align="right">{Number(v.mean_cycle_minutes).toFixed(1)} min</td>
-                          <td align="right">{Number(v.p95_cycle_minutes).toFixed(1)} min</td>
-                          <td style={{paddingLeft:8,fontWeight:v.has_rework ? 700 : 400,color:v.has_rework ? "#92400e" : "#475569"}}>{v.has_rework ? "Yes" : "No"}</td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            }
-          </div>
-        }
-      </section>
-      }
-
-
-      {model &&
-        <section style={{
-          ...card,
-          marginTop:18
-        }}>
-          <h2 style={{
-            marginTop:0
-          }}>
-            {model.name}
-          </h2>
-
-          <div style={{
-            display:"flex",
-            gap:8,
-            flexWrap:"wrap"
-          }}>
-            {(model.activities || []).map(
-              a =>
-              <div
-                key={a.id}
-                style={{
-                  padding:"10px 14px",
-                  border:
-                    "1px solid #d1d5db",
-                  borderRadius:10
-                }}
-              >
-                <b>{a.name}</b>
-
-                <div style={{
-                  fontSize:12,
-                  color:"#6b7280"
-                }}>
-                  {fmtMax2(
-                    a.service_time
-                    ?.mean_minutes
-                  )} min
-                </div>
-              </div>
-            )}
+      {model && <>
+        <section style={{...card,marginTop:18}}>
+          <h2 style={{marginTop:0}}>Current model</h2>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:10}}>
+            <Summary label="Process" value={model.name || model.id} />
+            <Summary label="Workflow class" value={model.workflow_class || "general"} />
+            <Summary label="Process architecture" value={activeArchitecture?.name || activeArchitecture?.id || "—"} />
+            <Summary label="Activities" value={enabledActivities.length} />
+            <Summary label="Resource pools" value={(model.resources || []).length} />
+            <Summary label="Individual resources" value={(model.agents || []).length} />
           </div>
         </section>
-      }
 
-
-      {workflowClass === "general" &&
-      <section style={{
-        ...card,
-        marginTop:18
-      }}>
-        <h2 style={{
-          marginTop:0
-        }}>
-          Baseline & analysis
-        </h2>
-
-        <p style={{color:"#4b5563",lineHeight:1.5,marginTop:0}}>
-          Run simulation and optimization only after the process model has been loaded or calibrated above.
-        </p>
-
-        <div style={{
-          display:"flex",
-          gap:10,
-          flexWrap:"wrap"
-        }}>
-
-          <button
-            disabled={busy}
-            style={{
-              ...buttonStyle,
-              opacity:
-                busy ? 0.55 : 1
-            }}
-            onClick={
-              runSimulation
-            }
-          >
-            Run baseline simulation
-          </button>
-
-          <button
-            disabled={busy}
-            style={{
-              ...buttonStyle,
-              opacity:
-                busy ? 0.55 : 1
-            }}
-            onClick={runOptimize}
-          >
-            {runningAction
-              === "Running robust optimization"
-              ? "Optimization running..."
-              : "Optimize architecture families"}
-          </button>
-
-          <button
-            disabled={busy || !model || !opt?.results?.[0]?.best}
-            style={{
-              ...buttonStyle,
-              opacity:
-                busy || !model || !opt?.results?.[0]?.best
-                ? 0.55
-                : 1
-            }}
-            onClick={runCompare}
-          >
-            Compare selected TO-BE
-          </button>
-
-          <button
-            disabled={busy || !model}
-            style={{
-              ...buttonStyle,
-              opacity:
-                busy || !model
-                ? 0.55
-                : 1
-            }}
-            onClick={() => {
-              if (!model) return;
-              localStorage.setItem(
-                "pds_cellularization_model",
-                JSON.stringify(model)
-              );
-              window.location.href = "/cellularization";
-            }}
-          >
-            Open Cellularization &amp; Scheduling
-          </button>
-        </div>
-
-        <div id="optimization-immediate">
-          {optError &&
-            <div style={{...card,marginTop:12,background:"#fef2f2",border:"1px solid #fecaca",color:"#991b1b",fontSize:13}}>
-              <b>Optimization error:</b> {optError}
-            </div>
-          }
-          {opt && <OptimizationImmediateSummary opt={opt} />}
-        </div>
-      </section>
-      }
-      {model &&
-        <section style={{
-          ...card,
-          marginTop:18
-        }}>
-          <div style={{
-            display:"flex",
-            justifyContent:"space-between",
-            alignItems:"center",
-            gap:12,
-            flexWrap:"wrap"
-          }}>
+        <section id="manual-cell-design" style={{...card,marginTop:18}}>
+          <div style={{display:"flex",justifyContent:"space-between",gap:12,alignItems:"center",flexWrap:"wrap"}}>
             <div>
-              <h2 style={{
-                margin:"0 0 4px"
-              }}>
-                Visual Process Modeler
-              </h2>
-
-              <div style={{
-                fontSize:13,
-                color:"#6b7280"
-              }}>
-                Edit a general directed workflow with branching,
-                merging, exception paths, and rework loops before
-                running simulation or robust optimization.
-              </div>
+              <h2 style={{margin:"0 0 5px"}}>Phase 1 — Manual cell design</h2>
+              <div style={muted}>Define cells without changing the underlying process architecture or service-time models.</div>
             </div>
-
-            <div style={{
-              display:"flex",
-              gap:8,
-              flexWrap:"wrap"
-            }}>
-              <button
-                disabled={busy}
-                style={buttonStyle}
-                onClick={addActivity}
-              >
-                Add activity
-              </button>
-
-              <button
-                disabled={busy}
-                style={buttonStyle}
-                onClick={addTransition}
-              >
-                Add transition
-              </button>
-
-              {modelSkillColumns(model).length > 0 &&
-                <button
-                  disabled={busy}
-                  style={{
-                    ...buttonStyle,
-                    background:skillMatrixOpen ? "#eef2ff" : "#fff",
-                    borderColor:skillMatrixOpen ? "#a5b4fc" : "#d1d5db"
-                  }}
-                  onClick={() => setSkillMatrixOpen(x => !x)}
-                >
-                  {skillMatrixOpen ? "Hide skill matrix" : "Skill matrix"}
-                </button>
-              }
-
-              <button
-                disabled={busy}
-                style={buttonStyle}
-                onClick={downloadModel}
-              >
-                Download model JSON
-              </button>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              <button onClick={addCell} style={{padding:"9px 12px",borderRadius:8,border:"1px solid #cbd5e1",background:"#fff",fontWeight:800,cursor:"pointer"}}>Add cell</button>
+              <button onClick={saveCells} disabled={!cells.length} style={{padding:"9px 12px",borderRadius:8,border:"1px solid #4f46e5",background:cells.length?"#4f46e5":"#cbd5e1",color:"#fff",fontWeight:800,cursor:cells.length?"pointer":"default"}}>Save cell design</button>
             </div>
           </div>
 
-          <div style={{
-            marginTop:16
-          }}>
-            <ProcessGraph
+          {cellStatus && <div style={{marginTop:10,fontSize:12,color:cellStatus.startsWith("Cannot")?"#b91c1c":"#166534",fontWeight:700}}>{cellStatus}</div>}
+
+          {!cells.length && <div style={{marginTop:16,padding:16,border:"1px dashed #cbd5e1",borderRadius:12,color:"#64748b",fontSize:13}}>No cells defined yet. Click <b>Add cell</b> to begin.</div>}
+
+          {cells.map((cell,idx) => (
+            <div key={cell.id} style={{...card,boxShadow:"none",background:"#f8fafc",marginTop:14}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+                <div style={{display:"flex",alignItems:"center",gap:10,flex:1,minWidth:260}}>
+                  <div style={{fontSize:11,fontWeight:800,color:"#4f46e5"}}>CELL {idx+1}</div>
+                  <input value={cell.name || ""} onChange={e => updateCell(cell.id,{name:e.target.value})} style={{flex:1,minWidth:160,padding:"7px 9px",border:"1px solid #cbd5e1",borderRadius:7,fontWeight:700}} />
+                </div>
+                <label style={{display:"flex",alignItems:"center",gap:6,fontSize:12,color:"#475569",fontWeight:700}}>
+                  <input type="checkbox" checked={!!cell.cross_cell_eligible} onChange={e => updateCell(cell.id,{cross_cell_eligible:e.target.checked})} />
+                  May receive overflow
+                </label>
+                <button onClick={() => removeCell(cell.id)} style={{padding:"7px 10px",borderRadius:7,border:"1px solid #fecaca",background:"#fff",color:"#b91c1c",fontWeight:700,cursor:"pointer"}}>Remove</button>
+              </div>
+
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(310px,1fr))",gap:14,marginTop:14}}>
+                <div>
+                  <div style={{fontWeight:800,fontSize:13}}>Activities in this cell</div>
+                  <div style={{fontSize:11,color:"#64748b",margin:"4px 0 8px"}}>Activities may temporarily appear in more than one cell while designing. Ambiguities are shown below.</div>
+                  <div style={{display:"grid",gap:6,maxHeight:270,overflow:"auto",paddingRight:4}}>
+                    {enabledActivities.map(a => {
+                      const checked = (cell.activity_ids || []).includes(a.id);
+                      const count = (activityAssignments[a.id] || []).length;
+                      return <label key={a.id} style={{display:"flex",alignItems:"center",gap:8,fontSize:12,padding:"6px 8px",border:"1px solid #e2e8f0",borderRadius:8,background:"#fff"}}>
+                        <input type="checkbox" checked={checked} onChange={() => toggleActivity(cell.id,a.id)} />
+                        <span style={{flex:1}}>{a.name || a.id}</span>
+                        {count > 1 && <span style={{fontSize:10,color:"#b45309",fontWeight:800}}>MULTI-CELL</span>}
+                      </label>;
+                    })}
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{fontWeight:800,fontSize:13}}>Resource capacity assigned</div>
+                  <div style={{fontSize:11,color:"#64748b",margin:"4px 0 8px"}}>Resource capacity is exclusive in Phase 1. Capacity assigned to one cell is immediately removed from what other cells can claim. Total cell capacity must equal the global baseline before comparison.</div>
+                  <div style={{display:"grid",gap:7}}>
+                    {(model.resources || []).map(r => {
+                      const used = capacityUse[r.id] || 0;
+                      const cap = Number(r.capacity || 0);
+                      const current = Math.max(0,Number(cell.resource_capacities?.[r.id]) || 0);
+                      const usedElsewhere = Math.max(0,used - current);
+                      const maxForThisCell = Math.max(0,cap - usedElsewhere);
+                      const remaining = Math.max(0,cap - used);
+                      return <div key={r.id} style={{display:"grid",gridTemplateColumns:"1fr 85px 150px",gap:8,alignItems:"center",fontSize:12,padding:"6px 8px",border:"1px solid #e2e8f0",borderRadius:8,background:"#fff"}}>
+                        <span>{r.name || r.id}</span>
+                        <input type="number" min="0" max={maxForThisCell} step="1" value={current} onChange={e => setCellCapacity(cell.id,r.id,e.target.value)} style={{width:"100%",padding:"5px 6px",border:"1px solid #cbd5e1",borderRadius:6}} />
+                        <span style={{textAlign:"right",color:"#64748b",fontWeight:600}}>{used} / {cap} allocated · {remaining} free</span>
+                      </div>;
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+
+          {cells.length > 0 && <div style={{marginTop:14,padding:"12px 14px",border:"1px solid #e2e8f0",borderRadius:10,background:"#fff"}}>
+            <div style={{fontWeight:800,fontSize:13}}>Design validation</div>
+            <div style={{fontSize:12,color:"#64748b",marginTop:6,lineHeight:1.55}}>
+              Activities unassigned: <b>{enabledActivities.filter(a => !(activityAssignments[a.id] || []).length).length}</b> · Activities assigned to multiple cells: <b>{enabledActivities.filter(a => (activityAssignments[a.id] || []).length > 1).length}</b> · Resource pools with exact baseline allocation: <b>{(model.resources || []).filter(r => (capacityUse[r.id] || 0) === Number(r.capacity || 0)).length}/{(model.resources || []).length}</b>.
+            </div>
+          </div>}
+        </section>
+
+        <section style={{...card,marginTop:18}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+            <div>
+              <div style={{fontSize:11,fontWeight:800,color:"#4f46e5",textTransform:"uppercase",letterSpacing:".06em"}}>Decision support</div>
+              <h2 style={{margin:"4px 0 5px"}}>Cell Structural Analysis</h2>
+              <div style={muted}>Measures how much operational variety is localized by the current cell design. Entropy is a structural heuristic only; it does not replace simulation.</div>
+            </div>
+            <button
+              onClick={runStructuralAnalysis}
+              disabled={!structuralReady || structuralBusy}
+              style={{padding:"10px 14px",borderRadius:8,border:"1px solid #4f46e5",background:structuralReady && !structuralBusy?"#4f46e5":"#cbd5e1",color:"#fff",fontWeight:800,cursor:structuralReady && !structuralBusy?"pointer":"default"}}
+            >
+              {structuralBusy ? "Analyzing..." : "Analyze Current Cell Design"}
+            </button>
+          </div>
+
+          {!structuralReady && <div style={{marginTop:12,padding:"10px 12px",border:"1px solid #fed7aa",background:"#fff7ed",borderRadius:9,fontSize:12,color:"#9a3412"}}>Assign every enabled activity to exactly one cell before running structural analysis. Resource allocation may still be edited; incomplete capacity will appear in the fit/penalty measures.</div>}
+
+          <div style={{marginTop:16}}>
+            <div style={{fontWeight:800,fontSize:13}}>Configurable structural weights</div>
+            <div style={{fontSize:11,color:"#64748b",marginTop:4}}>Weights change the decision-support score only. They do not change the cells or simulation. Set a weight to 0 to exclude that component.</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(185px,1fr))",gap:8,marginTop:10}}>
+              {Object.entries({
+                work_type_entropy:"Work-type entropy",
+                routing_entropy:"Routing entropy",
+                skill_entropy:"Skill entropy",
+                activity_entropy:"Activity entropy",
+                processing_entropy:"Processing entropy",
+                fragmentation_penalty:"Fragmentation penalty",
+                capacity_imbalance_penalty:"Capacity imbalance",
+                skill_duplication_penalty:"Scarce-skill duplication",
+                pooling_loss_penalty:"Pooling loss",
+                overflow_pressure_penalty:"Overflow pressure"
+              }).map(([key,label]) => <label key={key} style={{display:"block",fontSize:11,color:"#475569",fontWeight:800,padding:"9px 10px",border:"1px solid #e2e8f0",borderRadius:9,background:"#fff"}}>
+                <span style={{display:"block",minHeight:15}}>{label}</span>
+                <input type="number" min="0" step="0.25" value={structuralWeights[key]} onChange={e => setStructuralWeight(key,e.target.value)} style={{display:"block",width:"100%",marginTop:6,padding:"6px 7px",border:"1px solid #cbd5e1",borderRadius:7}} />
+              </label>)}
+            </div>
+          </div>
+
+          {structuralStatus && <div style={{marginTop:12,fontSize:12,fontWeight:700,color:structuralStatus.startsWith("Analysis error")?"#b91c1c":"#475569"}}>{structuralStatus}</div>}
+
+          {structuralAnalysis && <StructuralAnalysisPanel analysis={structuralAnalysis} />}
+        </section>
+
+        <section style={{...card,marginTop:18,border:"1px solid #a7f3d0",background:"#f0fdf4"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+            <div style={{maxWidth:850}}>
+              <div style={{fontSize:11,fontWeight:900,color:"#047857",textTransform:"uppercase",letterSpacing:".06em"}}>Automated cellularization — decision support</div>
+              <h2 style={{margin:"4px 0 5px"}}>Generate, simulate, and expose the tradeoff frontier</h2>
+              <div style={muted}>Automatically explores several cell counts, generates structurally coherent alternatives, evaluates strict cells and controlled overflow with common random numbers, and returns a Pareto set. It does not silently change your operating model or declare a unique optimum.</div>
+            </div>
+            <button
+              onClick={runAutomatedCellularization}
+              disabled={!model || !activeArchitecture || enabledActivities.length < 2 || autoCellularizationBusy}
+              style={{padding:"11px 15px",borderRadius:9,border:"1px solid #059669",background:(!autoCellularizationBusy && enabledActivities.length >= 2)?"#059669":"#cbd5e1",color:"#fff",fontWeight:900,cursor:(!autoCellularizationBusy && enabledActivities.length >= 2)?"pointer":"default"}}
+            >
+              {autoCellularizationBusy ? "Running automated cellularization..." : "Run Automated Cellularization"}
+            </button>
+          </div>
+          <div style={{marginTop:12,padding:"10px 12px",border:"1px solid #bbf7d0",background:"#ecfdf5",borderRadius:9,fontSize:12,color:"#065f46",lineHeight:1.55}}>
+            The default search range scales with process size up to 6 cells. This first automated version uses 4 paired replications × 400 cases per candidate, the current overflow trigger/cap, and a 95% maximum-utilization guardrail. Generated candidates remain fully editable.
+          </div>
+          {autoCellularizationStatus && <div style={{marginTop:12,fontSize:12,fontWeight:800,color:autoCellularizationStatus.startsWith("Automated cellularization error")?"#b91c1c":"#166534"}}>{autoCellularizationStatus}</div>}
+        </section>
+
+        {autoCellularization?.candidates?.length > 0 && <section id="automated-cellularization-results" style={{...card,marginTop:18}}>
+          <div style={{fontSize:11,fontWeight:900,color:"#047857",textTransform:"uppercase",letterSpacing:".06em"}}>Automated cellularization results</div>
+          <h2 style={{margin:"4px 0 5px"}}>Pareto alternatives</h2>
+          <div style={muted}>Only tradeoffs are highlighted. Structural coherence is kept separate from simulation performance, and utilization/skill guardrails are reported explicitly.</div>
+          <AutomatedCellularizationPanel
+            result={autoCellularization}
+            onLoad={c => loadCandidateIntoEditor(c,false)}
+            onLoadOverflow={c => loadCandidateIntoEditor(c,true)}
+            onSave={saveCandidateDesign}
+          />
+        </section>}
+
+        <section style={{...card,marginTop:18,border:"1px solid #cbd5e1"}}>
+          <div style={{fontSize:11,fontWeight:900,color:"#475569",textTransform:"uppercase",letterSpacing:".06em"}}>Design workspace</div>
+          <h2 style={{margin:"4px 0 5px"}}>Saved Cell Designs</h2>
+          <div style={muted}>Save generated alternatives or edited designs as independent snapshots. Loading another design changes the editor only; saved snapshots remain available for later analysis.</div>
+          <SavedCellDesignsPanel
+            designs={savedDesigns}
+            currentName={savedDesignName}
+            onNameChange={setSavedDesignName}
+            onSaveCurrent={saveCurrentDesignSnapshot}
+            onLoad={d => loadSavedDesign(d,false)}
+            onLoadOverflow={d => loadSavedDesign(d,true)}
+            onDelete={deleteSavedDesign}
+            hasCurrent={cells.length > 0}
+          />
+        </section>
+
+        <section id="candidate-cell-designs" style={{...card,marginTop:18}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+            <div>
+              <div style={{fontSize:11,fontWeight:800,color:"#7c3aed",textTransform:"uppercase",letterSpacing:".06em"}}>Stage 1 candidate generation</div>
+              <h2 style={{margin:"4px 0 5px"}}>Generate alternative cell structures</h2>
+              <div style={muted}>Creates structurally coherent 2-cell and 3-cell alternatives from routing, graph topology, processing-time similarity, and resource compatibility. This is decision support, not an automatic recommendation.</div>
+            </div>
+            <button
+              onClick={generateCandidateCells}
+              disabled={!model || !activeArchitecture || candidateBusy || enabledActivities.length < 2}
+              style={{padding:"10px 14px",borderRadius:8,border:"1px solid #7c3aed",background:(!candidateBusy && enabledActivities.length >= 2)?"#7c3aed":"#cbd5e1",color:"#fff",fontWeight:800,cursor:(!candidateBusy && enabledActivities.length >= 2)?"pointer":"default"}}
+            >
+              {candidateBusy ? "Generating candidates..." : "Generate 2-cell & 3-cell candidates"}
+            </button>
+          </div>
+
+          <div style={{marginTop:12,padding:"10px 12px",border:"1px solid #ddd6fe",background:"#f5f3ff",borderRadius:9,fontSize:12,color:"#5b21b6",lineHeight:1.5}}>
+            Three similarity profiles are attempted for each cell count: balanced, routing/topology emphasis, and processing-character emphasis. Duplicate partitions are removed. Resource capacity is partitioned without duplication. Simulation is deliberately not run at this stage.
+          </div>
+
+          {candidateStatus && <div style={{marginTop:12,fontSize:12,fontWeight:700,color:candidateStatus.startsWith("Candidate generation error")?"#b91c1c":"#475569"}}>{candidateStatus}</div>}
+          {candidateSet?.candidates?.length > 0 && <>
+            <CandidateDesignsPanel
+              candidateSet={candidateSet}
               model={model}
-              selectedActivityId={selectedActivityId}
-              selectedTransitionIndex={selectedTransitionIndex}
-              onSelectActivity={id => {
-                setSelectedActivityId(id);
-                setSelectedTransitionIndex(null);
-              }}
-              onSelectTransition={i => {
-                setSelectedTransitionIndex(i);
-                setSelectedActivityId(null);
-              }}
+              onLoad={c => loadCandidateIntoEditor(c,false)}
+              onLoadOverflow={c => loadCandidateIntoEditor(c,true)}
+              onSave={saveCandidateDesign}
             />
-          </div>
-
-          {skillMatrixOpen && modelSkillColumns(model).length > 0 &&
-            <div style={{...card,marginTop:12,background:"#f8fafc"}}>
-              <div style={{fontWeight:800}}>
-                Editable skill matrix
-              </div>
-              <div style={{fontSize:12,color:"#64748b",marginTop:4,lineHeight:1.45}}>
-                {Array.isArray(model.agents) && model.agents.length
-                  ? "Rows are individual resources/agents and columns are skills. Cross-train a specific person by checking a skill. Proficiency from 0.25 to 1.00 affects that person's modeled service time."
-                  : "Rows are resource pools and columns are skills. Check or clear a skill assignment to change pool eligibility."}
-                {" "}Rerun Simulation or Optimization after edits to evaluate the effect.
-              </div>
-
-              <div style={{overflowX:"auto",marginTop:12}}>
-                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                  <thead>
-                    <tr>
-                      <th style={{textAlign:"left",padding:"7px 8px",position:"sticky",left:0,background:"#f8fafc",zIndex:1,borderBottom:"1px solid #e2e8f0"}}>
-                        {Array.isArray(model.agents) && model.agents.length
-                          ? "Individual resource"
-                          : "Resource pool"}
-                      </th>
-                      {modelSkillColumns(model).map(skill =>
-                        <th key={skill} style={{textAlign:"center",padding:"7px 10px",whiteSpace:"nowrap",borderBottom:"1px solid #e2e8f0"}}>
-                          {skill}
-                        </th>
-                      )}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {skillMatrixRows(model).map(row =>
-                      <tr key={row.id}>
-                        <td style={{padding:"8px",fontWeight:700,position:"sticky",left:0,background:"#f8fafc",borderBottom:"1px solid #e2e8f0",whiteSpace:"nowrap"}}>
-                          {row.name || row.id}
-                          <div style={{fontSize:10,color:"#94a3b8",fontWeight:400}}>
-                            {row._matrixType === "agent"
-                              ? `${row.id} · ${row.resource_pool}${row.synthetic ? " · unspecified staffing slot" : ""}`
-                              : row.id}
-                          </div>
-                        </td>
-                        {modelSkillColumns(model).map(skill => {
-                          const checked=(row.skills || []).includes(skill);
-                          const proficiency = checked && row._matrixType === "agent"
-                            ? Number(row.skill_proficiency?.[skill] ?? 1)
-                            : null;
-                          return (
-                            <td key={`${row.id}-${skill}`} style={{textAlign:"center",padding:"6px 8px",borderBottom:"1px solid #e2e8f0",minWidth:92}}>
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={() => toggleMatrixSkill(row.id,skill)}
-                                aria-label={`${row.name || row.id}: ${skill}`}
-                              />
-                              {checked && row._matrixType === "agent" &&
-                                <div style={{marginTop:4}}>
-                                  <input
-                                    type="number"
-                                    min="0.25"
-                                    max="1"
-                                    step="0.05"
-                                    value={proficiency}
-                                    onChange={e => updateAgentProficiency(row.id,skill,e.target.value)}
-                                    title="Skill proficiency; 1.00 is baseline speed"
-                                    style={{width:58,fontSize:10,padding:"2px 3px",textAlign:"center"}}
-                                  />
-                                </div>
-                              }
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-
-              <div style={{marginTop:10,padding:"9px 10px",borderRadius:8,background:"#fff",border:"1px solid #e2e8f0",fontSize:11,color:"#475569",lineHeight:1.45}}>
-                {Array.isArray(model.agents) && model.agents.length
-                  ? "The simulator now allocates work to individual eligible agents. Pool staffing profiles determine how many agent slots are active at each interval. Cross-training therefore changes the number and identity of resources that can serve a skill. Lower proficiency increases service time for that agent until training reaches baseline proficiency 1.00."
-                  : "Skill edits recalculate each skill-constrained activity's eligible resource pools and affect the next simulation/optimization run."}
-              </div>
-            </div>
-          }
-
-          {(selectedActivityId || selectedTransitionIndex !== null) &&
-            <div style={{...card,marginTop:12,background:"#f8fafc"}}>
-              {selectedActivityId && (() => {
-                const a = (model.activities || []).find(x => x.id === selectedActivityId);
-                if (!a) return null;
-                return (
-                  <>
-                    <div style={{fontWeight:800,marginBottom:4}}>Selected activity</div>
-                    <div style={{fontSize:12,color:"#64748b",marginBottom:10}}>
-                      Model source: <b>{a.model_source || "configured"}</b> · Confidence: <b>{a.confidence || "defined"}</b>
-                    </div>
-                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:10}}>
-                      <label style={{fontSize:12}}>Name
-                        <input value={a.name} onChange={e => updateActivity(a.id,"name",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}/>
-                      </label>
-                      <label style={{fontSize:12}}>How should this step be modeled?
-                        <select value={a.model_source || "configured"} onChange={e => updateActivity(a.id,"model_source",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}>
-                          <option value="configured">Configured model</option>
-                          <option value="event_log">Event-log calibrated</option>
-                          <option value="expert_estimate">Triangular SME estimate</option>
-                          <option value="manual_sample">Manual sample / bootstrap</option>
-                          <option value="borrowed">Borrow another activity</option>
-                          <option value="fixed">Fixed duration</option>
-                          <option value="terminal">Terminal / milestone</option>
-                          <option value="unresolved">Unresolved / data missing</option>
-                        </select>
-                      </label>
-                      {!a.terminal &&
-                        <label style={{fontSize:12}}>Resource pool
-                          <select value={a.resource_pool || ""} onChange={e => updateActivity(a.id,"resource_pool",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}>
-                            <option value="">No resource pool</option>
-                            {resourceOptions(model).map(r => <option key={r} value={r}>{r}</option>)}
-                          </select>
-                        </label>
-                      }
-                    </div>
-
-                    {a.model_source === "unresolved" &&
-                      <div style={{marginTop:10,padding:"10px 12px",background:"#fff7ed",border:"1px solid #fed7aa",borderRadius:8,fontSize:12,color:"#9a3412"}}>
-                        No usable duration observations were available for this step. Choose Terminal, Triangular SME estimate, Manual sample, Borrow another activity, or Fixed duration before simulation/optimization.
-                      </div>
-                    }
-
-                    {a.model_source === "expert_estimate" &&
-                      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:10,marginTop:10}}>
-                        <label style={{fontSize:12}}>Minimum (min)<input type="number" min="0" step="0.1" value={a.service_time?.minimum_minutes ?? ""} onChange={e => updateActivity(a.id,"minimum_minutes",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}/></label>
-                        <label style={{fontSize:12}}>Most likely (min)<input type="number" min="0" step="0.1" value={a.service_time?.mode_minutes ?? ""} onChange={e => updateActivity(a.id,"mode_minutes",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}/></label>
-                        <label style={{fontSize:12}}>Maximum (min)<input type="number" min="0" step="0.1" value={a.service_time?.maximum_minutes ?? ""} onChange={e => updateActivity(a.id,"maximum_minutes",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}/></label>
-                      </div>
-                    }
-
-                    {a.model_source === "manual_sample" &&
-                      <label style={{fontSize:12,display:"block",marginTop:10}}>Observed durations in minutes — paste values separated by commas, spaces, or new lines
-                        <textarea rows="4" defaultValue={(a.service_time?.samples_minutes || []).join(", ")} onBlur={e => updateActivity(a.id,"samples_text",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}/>
-                        <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",marginTop:6}}>
-                          <span style={{color:"#64748b"}}>{(a.service_time?.samples_minutes || []).length} usable observations · empirical bootstrap</span>
-                          <label style={{fontSize:12}}>or upload CSV/TXT durations
-                            <input type="file" accept=".csv,.txt,text/csv,text/plain" onChange={e => loadActivitySamplesFile(a.id,e.target.files?.[0])} style={{display:"block",marginTop:3}}/>
-                          </label>
-                        </div>
-                      </label>
-                    }
-
-                    {a.model_source === "borrowed" &&
-                      <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:10,marginTop:10}}>
-                        <label style={{fontSize:12}}>Borrow distribution from
-                          <select value={a.service_time?.source_activity_id || ""} onChange={e => updateActivity(a.id,"source_activity_id",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}>
-                            <option value="">Select similar activity</option>
-                            {(model.activities || []).filter(x => x.id !== a.id && x.model_source !== "unresolved" && !x.terminal).map(x => <option key={x.id} value={x.id}>{x.name}</option>)}
-                          </select>
-                        </label>
-                        <label style={{fontSize:12}}>Time multiplier
-                          <input type="number" min="0.01" step="0.05" value={a.service_time?.scale ?? 1} onChange={e => updateActivity(a.id,"scale",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}/>
-                        </label>
-                      </div>
-                    }
-
-                    {a.model_source === "fixed" &&
-                      <label style={{fontSize:12,display:"block",marginTop:10,maxWidth:220}}>Fixed duration (min)
-                        <input type="number" min="0.01" step="0.1" value={a.service_time?.mean_minutes ?? 0} onChange={e => updateActivity(a.id,"mean_minutes",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}/>
-                      </label>
-                    }
-
-                    {(a.model_source === "event_log" || a.model_source === "configured") &&
-                      <div style={{fontSize:12,color:"#64748b",marginTop:10}}>
-                        {a.service_time?.distribution} · mean {fmtMax2(a.service_time?.mean_minutes || 0)} min · std {fmtMax2(a.service_time?.std_minutes || 0)} min
-                      </div>
-                    }
-
-                    {a.terminal &&
-                      <div style={{fontSize:12,color:"#64748b",marginTop:10}}>Terminal activities are modeled as milestones with no processing resource or material service duration.</div>
-                    }
-                  </>
-                );
-              })()}
-              {selectedTransitionIndex !== null && (() => {
-                const t = activeTransitions(model)[selectedTransitionIndex];
-                if (!t) return null;
-                const backward = (() => {
-                  const acts = (model.activities || []).map(a => a.id);
-                  return acts.indexOf(t.target) <= acts.indexOf(t.source);
-                })();
-                return (
-                  <>
-                    <div style={{fontWeight:800,marginBottom:10}}>Selected transition {backward ? "· rework/return path" : ""}</div>
-                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:10}}>
-                      <label style={{fontSize:12}}>From
-                        <select value={t.source} onChange={e => updateTransition(selectedTransitionIndex,"source",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}>
-                          {(model.activities || []).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-                        </select>
-                      </label>
-                      <label style={{fontSize:12}}>To
-                        <select value={t.target} onChange={e => updateTransition(selectedTransitionIndex,"target",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}>
-                          {(model.activities || []).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-                        </select>
-                      </label>
-                      <label style={{fontSize:12}}>Routing probability
-                        <input type="number" min="0" max="1" step="0.001" value={fmtProbabilityInput(t.probability)} onChange={e => updateTransition(selectedTransitionIndex,"probability",e.target.value)} style={{display:"block",width:"100%",marginTop:4}}/>
-                      </label>
-                    </div>
-                    <button style={{...buttonStyle,marginTop:10}} onClick={() => {removeTransition(selectedTransitionIndex); setSelectedTransitionIndex(null);}}>Delete transition</button>
-                  </>
-                );
-              })()}
-            </div>
-          }
-
-          <h3>
-            Activities
-          </h3>
-
-          <div style={{
-            overflowX:"auto"
-          }}>
-            <table style={{
-              width:"100%",
-              borderCollapse:"collapse",
-              fontSize:13
-            }}>
-              <thead>
-                <tr>
-                  <th align="left">
-                    Activity
-                  </th>
-                  <th align="left">
-                    Mean service (min)
-                  </th>
-                  <th align="left">
-                    Resource pool
-                  </th>
-                  <th />
-                </tr>
-              </thead>
-
-              <tbody>
-                {(model.activities || []).map(
-                  a =>
-                    <tr key={a.id}>
-                      <td style={{
-                        padding:"7px 4px"
-                      }}>
-                        <input
-                          value={a.name}
-                          onChange={
-                            e =>
-                              updateActivity(
-                                a.id,
-                                "name",
-                                e.target.value
-                              )
-                          }
-                        />
-                      </td>
-
-                      <td>
-                        <input
-                          type="number"
-                          min="0.01"
-                          step="0.1"
-                          value={fmtMax2Input(
-                            a
-                            .service_time
-                            ?.mean_minutes
-                            ?? 0
-                          )}
-                          onChange={
-                            e =>
-                              updateActivity(
-                                a.id,
-                                "mean_minutes",
-                                e.target.value
-                              )
-                          }
-                          style={{
-                            width:100
-                          }}
-                        />
-                      </td>
-
-                      <td>
-                        <select
-                          value={
-                            a.resource_pool
-                            || ""
-                          }
-                          onChange={
-                            e =>
-                              updateActivity(
-                                a.id,
-                                "resource_pool",
-                                e.target.value
-                              )
-                          }
-                        >
-                          {
-                            resourceOptions(
-                              model
-                            )
-                            .map(r =>
-                              <option
-                                key={r}
-                                value={r}
-                              >
-                                {r}
-                              </option>
-                            )
-                          }
-                        </select>
-                      </td>
-
-                      <td>
-                        {
-                          a.id
-                          !== model
-                          .start_activity
-                          && a.id
-                          !== model
-                          .end_activity
-                          &&
-                          <button
-                            style={buttonStyle}
-                            onClick={
-                              () =>
-                                removeActivity(
-                                  a.id
-                                )
-                            }
-                          >
-                            Remove
-                          </button>
-                        }
-                      </td>
-                    </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          <h3>
-            Routing / transitions
-          </h3>
-
-          <div style={{
-            fontSize:12,
-            color:"#6b7280",
-            marginBottom:8
-          }}>
-            Active architecture: {
-              activeArchitecture(model)?.name
-              || activeArchitecture(model)?.id
-              || "none"
-            } · {
-              activeTransitions(model).length
-            } transition(s)
-          </div>
-
-          <div style={{
-            overflowX:"auto"
-          }}>
-            <table style={{
-              width:"100%",
-              borderCollapse:"collapse",
-              fontSize:13
-            }}>
-              <thead>
-                <tr>
-                  <th align="left">
-                    From
-                  </th>
-                  <th align="left">
-                    To
-                  </th>
-                  <th align="left">
-                    Probability
-                  </th>
-                  <th />
-                </tr>
-              </thead>
-
-              <tbody>
-                {activeTransitions(model).map(
-                  (t,i) =>
-                    <tr key={i}>
-                      <td>
-                        <select
-                          value={t.source}
-                          onChange={
-                            e =>
-                              updateTransition(
-                                i,
-                                "source",
-                                e.target.value
-                              )
-                          }
-                        >
-                          {
-                            model
-                            .activities
-                            .map(a =>
-                              <option
-                                key={a.id}
-                                value={a.id}
-                              >
-                                {a.name}
-                              </option>
-                            )
-                          }
-                        </select>
-                      </td>
-
-                      <td>
-                        <select
-                          value={t.target}
-                          onChange={
-                            e =>
-                              updateTransition(
-                                i,
-                                "target",
-                                e.target.value
-                              )
-                          }
-                        >
-                          {
-                            model
-                            .activities
-                            .map(a =>
-                              <option
-                                key={a.id}
-                                value={a.id}
-                              >
-                                {a.name}
-                              </option>
-                            )
-                          }
-                        </select>
-                      </td>
-
-                      <td>
-                        <input
-                          type="number"
-                          min="0"
-                          max="1"
-                          step="0.001"
-                          value={
-                            fmtProbabilityInput(t.probability)
-                          }
-                          onChange={
-                            e =>
-                              updateTransition(
-                                i,
-                                "probability",
-                                e.target.value
-                              )
-                          }
-                          style={{
-                            width:90
-                          }}
-                        />
-                      </td>
-
-                      <td>
-                        <button
-                          style={buttonStyle}
-                          onClick={
-                            () =>
-                              removeTransition(
-                                i
-                              )
-                          }
-                        >
-                          Remove
-                        </button>
-                      </td>
-                    </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          {getResourceKey(model) &&
-            <>
-              <h3>
-                Resource capacities
-              </h3>
-
-              <div style={{
-                display:"grid",
-                gridTemplateColumns:
-                  "repeat(auto-fit,minmax(180px,1fr))",
-                gap:10
-              }}>
-                {
-                  model[
-                    getResourceKey(
-                      model
-                    )
-                  ].map(r =>
-                    <label
-                      key={r.id}
-                      style={{
-                        ...card,
-                        fontSize:12
-                      }}
-                    >
-                      <b>
-                        {r.name || r.id}
-                      </b>
-
-                      <div style={{
-                        marginTop:6
-                      }}>
-                        Capacity
-                      </div>
-
-                      <input
-                        type="number"
-                        min="1"
-                        step="1"
-                        value={r.capacity}
-                        onChange={
-                          e =>
-                            updateResource(
-                              r.id,
-                              "capacity",
-                              e.target.value
-                            )
-                        }
-                        style={{
-                          width:"100%",
-                          marginTop:4
-                        }}
-                      />
-
-                      <div style={{
-                        marginTop:8
-                      }}>
-                        Cost / hour
-                      </div>
-
-                      <input
-                        type="number"
-                        min="0"
-                        step="1"
-                        value={r.cost_per_hour ?? 75}
-                        onChange={
-                          e =>
-                            updateResource(
-                              r.id,
-                              "cost_per_hour",
-                              e.target.value
-                            )
-                        }
-                        style={{
-                          width:"100%",
-                          marginTop:4
-                        }}
-                      />
-                    </label>
-                  )
-                }
-              </div>
-            </>
-          }
-        </section>
-      }
-
-      {sim &&
-        <section style={{
-          marginTop:18
-        }}>
-          <h2>
-            Baseline simulation
-          </h2>
-
-          <div style={{
-            display:"grid",
-            gridTemplateColumns:
-              "repeat(auto-fit,minmax(180px,1fr))",
-            gap:12
-          }}>
-            <Metric
-              label="Demand / hr"
-              value={
-                model
-                .arrival_rate_per_hour
-                .toFixed(2)
-              }
-            />
-
-            <Metric
-              label="Measured throughput / hr"
-              value={
-                sim.metrics
-                .throughput_per_hour
-                .toFixed(2)
-              }
-            />
-
-            <Metric
-              label="Realized arrivals / hr"
-              value={
-                sim.metrics
-                .realized_arrival_rate_per_hour
-                .toFixed(2)
-              }
-            />
-
-            <Metric
-              label="Flow balance"
-              value={
-                fmtFlow(sim.metrics
-                  .flow_balance)
-              }
-            />
-
-            <Metric
-              label="P95 cycle (min)"
-              value={
-                sim.metrics
-                .p95_cycle_minutes
-                .toFixed(1)
-              }
-            />
-
-            <Metric
-              label="SLA"
-              value={
-                fmtPct(
-                  sim.metrics
-                  .sla_attainment
-                )
-              }
-            />
-
-            <Metric
-              label="Max utilization"
-              value={
-                fmtPct(
-                  sim
-                  .structural_capacity
-                  .max_resource_utilization
-                )
-              }
-            />
-
-            <Metric
-              label="Bottleneck"
-              value={
-                sim
-                .structural_capacity
-                .bottleneck_resource
-                || "none"
-              }
-            />
-
-            <Metric
-              label="Capacity state"
-              value={
-                sim
-                .structural_capacity
-                .capacity_status
-              }
-            />
-
-            <Metric
-              label="Annual cost"
-              value={
-                money(
-                  sim.metrics
-                  .annual_cost
-                )
-              }
-            />
-          </div>
-        </section>
-      }
-
-      {opt &&
-        <section id="optimization-results" style={{
-          ...card,
-          marginTop:18,
-          scrollMarginTop:18
-        }}>
-          <h2 style={{
-            marginTop:0
-          }}>
-            Statistical robust architecture-family optimization
-          </h2>
-
-          <p style={{
-            color:"#4b5563"
-          }}>
-            Search target: at least 90% replicated
-            feasibility using flow balance ≥ 98%, P95 ≤ 600
-            minutes, SLA ≥ 90%, and max utilization ≤ 95%.
-            Candidate comparisons use the same random seeds.
-            Final validation uses 40 independent replications.
-          </p>
-
-          {opt.results?.length > 0 &&
-            (() => {
-              const rec =
-                opt.results[0];
-
-              const best =
-                rec.best;
-
-              const rob =
-                rec.robustness;
-
-              return (
-                <div style={{
-                  ...card,
-                  background:"#f0fdf4",
-                  border:"1px solid #bbf7d0",
-                  marginBottom:16
-                }}>
-                  <div style={{
-                    fontSize:12,
-                    fontWeight:800,
-                    color:"#166534",
-                    textTransform:"uppercase"
-                  }}>
-                    Recommended architecture
-                  </div>
-
-                  <div style={{
-                    fontSize:22,
-                    fontWeight:800,
-                    marginTop:4
-                  }}>
-                    {rec.architecture}
-                  </div>
-
-                  <div style={{
-                    fontSize:13,
-                    color:"#475569",
-                    marginTop:6,
-                    lineHeight:1.5
-                  }}>
-                    Selected because it {
-                      rec.robust_target_met
-                      ? "meets the robustness target and is the lowest-cost target-meeting architecture"
-                      : "is the strongest available architecture even though the robustness target is not yet met"
-                    }.
-                    {best?.metrics?.annual_cost !== undefined
-                      ? ` Annual cost ${money(best.metrics.annual_cost)}.`
-                      : ""}
-                    {rob?.probability !== undefined
-                      ? ` Final replicated feasibility ${fmtPct(rob.probability)}.`
-                      : ""}
-                  </div>
-
-                  {best?.design && designChangeLines(model,best.design).length > 0 &&
-                    <div style={{marginTop:10,fontSize:12,color:"#334155"}}>
-                      <b>Why this design:</b> {designChangeLines(model,best.design).slice(0,6).join(" · ")}
-                    </div>
-                  }
-                </div>
-              );
-            })()
-          }
-
-          <DesignSpaceChart results={opt.results} target={0.90} />
-
-          {opt.results.map(
-            (r,idx) => {
-              const b = r.best;
-              const env =
-                r
-                .feasibility_envelope
-                ?.envelope;
-
-              const rob =
-                r.robustness;
-
-              const rf =
-                r.robust_frontier;
-
-              return (
-                <div
-                  key={
-                    r.architecture
-                  }
-                  style={{
-                    padding:"18px 0",
-                    borderTop:
-                      idx
-                      ? "1px solid #eee"
-                      : "none"
-                  }}
-                >
-                  <div style={{
-                    display:"flex",
-                    justifyContent:
-                      "space-between",
-                    gap:12,
-                    flexWrap:"wrap"
-                  }}>
-                    <b>
-                      #{idx+1} {
-                        r.architecture
-                      }
-                    </b>
-
-                    <span style={{
-                      fontWeight:700,
-                      color:
-                        r.robust_target_met
-                        ? "#166534"
-                        : "#991b1b"
-                    }}>
-                      {
-                        r.robust_target_met
-                        ? "ROBUSTNESS TARGET MET"
-                        : "ROBUSTNESS TARGET NOT MET"
-                      }
-                    </span>
-                  </div>
-
-                  {env &&
-                    <div style={{
-                      fontSize:13,
-                      color:"#6b7280",
-                      marginTop:6
-                    }}>
-                      Envelope:
-                      {" "}max throughput {
-                        env
-                        .max_throughput_per_hour
-                        .toFixed(2)
-                      }/hr ·
-                      {" "}max demand satisfaction {
-                        fmtFlow(env
-                          .max_flow_balance)
-                      } ·
-                      {" "}min P95 {
-                        env
-                        .min_p95_cycle_minutes
-                        .toFixed(1)
-                      } min ·
-                      {" "}max SLA {
-                        fmtPct(
-                          env
-                          .max_sla_attainment
-                        )
-                      } ·
-                      {" "}min max-util {
-                        fmtPct(
-                          env
-                          .min_max_resource_utilization
-                        )
-                      } ·
-                      {" "}{
-                        env
-                        .points_evaluated
-                      } DOE points
-                    </div>
-                  }
-
-                  {rf &&
-                    <div style={{
-                      marginTop:14
-                    }}>
-                      <div style={{
-                        fontSize:13,
-                        fontWeight:700,
-                        marginBottom:8
-                      }}>
-                        Cost-vs-robustness choices
-                      </div>
-
-                      <div style={{
-                        display:"grid",
-                        gridTemplateColumns:
-                          "repeat(auto-fit,minmax(220px,1fr))",
-                        gap:10
-                      }}>
-                        <FrontierCard
-                          title="Lowest cost"
-                          item={
-                            rf.lowest_cost
-                          }
-                          target={
-                            rf
-                            .target_probability
-                          }
-                        />
-
-                        <FrontierCard
-                          title="Balanced"
-                          item={
-                            rf.balanced
-                          }
-                          target={
-                            rf
-                            .target_probability
-                          }
-                        />
-
-                        <FrontierCard
-                          title="Most robust"
-                          item={
-                            rf.most_robust
-                          }
-                          target={
-                            rf
-                            .target_probability
-                          }
-                        />
-                      </div>
-                    </div>
-                  }
-
-                  {b &&
-                    <>
-                      <div style={{
-                        fontSize:12,
-                        fontWeight:700,
-                        color:"#6b7280",
-                        textTransform:"uppercase",
-                        marginTop:14
-                      }}>
-                        Nominal single-run simulation
-                      </div>
-
-                      <div style={{
-                        fontSize:14,
-                        color:"#4b5563",
-                        marginTop:14
-                      }}>
-                        Selected design · cost {
-                          money(
-                            b.metrics
-                            .annual_cost
-                          )
-                        } ·
-                        {" "}Violation norm {
-                          b
-                          .violation_norm
-                          .toFixed(2)
-                        }
-                      </div>
-
-                      <div style={{
-                        fontSize:14,
-                        color:"#4b5563",
-                        marginTop:4
-                      }}>
-                        Throughput {
-                          b.metrics
-                          .throughput_per_hour
-                          .toFixed(2)
-                        }/hr ·
-                        {" "}Flow balance {
-                          fmtFlow(b.metrics
-                            .flow_balance)
-                        } ·
-                        {" "}P95 {
-                          b.metrics
-                          .p95_cycle_minutes
-                          .toFixed(1)
-                        } min ·
-                        {" "}SLA {
-                          fmtPct(
-                            b.metrics
-                            .sla_attainment
-                          )
-                        } ·
-                        {" "}Max utilization {
-                          fmtPct(
-                            b.metrics
-                            .max_resource_utilization
-                          )
-                        } ·
-                        {" "}Capacity {
-                          b.capacity
-                          .capacity_status
-                        }
-                      </div>
-
-                      <div style={{
-                        fontSize:13,
-                        color:"#6b7280",
-                        marginTop:4
-                      }}>
-                        Bottleneck: {
-                          b.capacity
-                          .bottleneck_resource
-                          || "none"
-                        } · Active constraints: {
-                          b
-                          .active_constraints
-                          ?.length
-                          ? b
-                            .active_constraints
-                            .join(", ")
-                          : "none"
-                        }
-                      </div>
-
-                      <div style={{
-                        fontSize:13,
-                        color:"#6b7280",
-                        marginTop:4
-                      }}>
-                        {
-                          Object.entries(
-                            b.design
-                          )
-                          .map(
-                            ([k,v]) =>
-                              `${k}=${Number(v).toFixed(3)}`
-                          )
-                          .join(" · ")
-                        }
-                      </div>
-                    </>
-                  }
-
-                  {rob &&
-                    <div style={{
-                      ...card,
-                      marginTop:12,
-                      background:"#fafafa"
-                    }}>
-                      <b>
-                        Replicated robustness validation
-                      </b>
-
-                      <div style={{
-                        fontSize:12,
-                        color:"#6b7280",
-                        marginTop:4
-                      }}>
-                        This replicated result determines whether the robustness target is met.
-                      </div>
-
-                      <div style={{
-                        fontSize:14,
-                        color:
-                          r
-                          .robust_target_met
-                          ? "#166534"
-                          : "#991b1b",
-                        fontWeight:700,
-                        marginTop:6
-                      }}>
-                        {
-                          r
-                          .robust_target_met
-                          ? "TARGET MET"
-                          : "TARGET NOT MET"
-                        } · feasibility {
-                          fmtPct(
-                            rob
-                            .probability
-                          )
-                        }
-                      </div>
-
-                      <div style={{
-                        fontSize:13,
-                        color:"#6b7280",
-                        marginTop:4
-                      }}>
-                        95% confidence interval [
-                        {
-                          fmtPct(
-                            rob
-                            .probability_ci95
-                            .lower
-                          )
-                        },{" "}
-                        {
-                          fmtPct(
-                            rob
-                            .probability_ci95
-                            .upper
-                          )
-                        }]
-                      </div>
-
-                      <div style={{
-                        fontSize:13,
-                        color:"#6b7280",
-                        marginTop:6
-                      }}>
-                        {
-                          rob.replications
-                        } replications · {
-                          rob
-                          .cases_per_replication
-                        } cases each ·
-                        {" "}Throughput mean {
-                          rob
-                          .mean_throughput
-                          .toFixed(2)
-                        }/hr ± {
-                          rob
-                          .std_throughput
-                          .toFixed(2)
-                        } ·
-                        {" "}Realized arrivals {
-                          rob
-                          .mean_realized_arrival_rate
-                          .toFixed(2)
-                        }/hr ·
-                        {" "}Flow balance mean {
-                          fmtFlow(rob
-                            .mean_flow_balance)
-                        } ·
-                        {" "}SLA mean {
-                          fmtPct(
-                            rob
-                            .mean_sla
-                          )
-                        } ·
-                        {" "}P95-cycle mean {
-                          rob
-                          .mean_p95
-                          .toFixed(1)
-                        } min
-                      </div>
-
-                      <div style={{
-                        fontSize:13,
-                        color:"#6b7280",
-                        marginTop:6
-                      }}>
-                        Backlog growth mean {
-                          rob
-                          .mean_backlog_growth
-                          .toFixed(2)
-                        }/hr · 90% interval [
-                        {
-                          rob
-                          .backlog_p05
-                          .toFixed(2)
-                        },{" "}
-                        {
-                          rob
-                          .backlog_p95
-                          .toFixed(2)
-                        }] · probability backlog
-                        growth &gt; 0.05/hr: {
-                          fmtPct(
-                            rob
-                            .probability_backlog_growth_above_0_05
-                          )
-                        }
-                      </div>
-
-                      {rob
-                        .probability_backlog_growth_above_0_05
-                        >= 0.25
-                        &&
-                        <div style={{
-                          marginTop:8,
-                          padding:"8px 10px",
-                          borderRadius:8,
-                          background:
-                            rob
-                            .probability_backlog_growth_above_0_05
-                            >= 0.50
-                            ? "#fef2f2"
-                            : "#fffbeb",
-                          color:
-                            rob
-                            .probability_backlog_growth_above_0_05
-                            >= 0.50
-                            ? "#991b1b"
-                            : "#92400e",
-                          fontSize:12,
-                          fontWeight:700
-                        }}>
-                          {rob
-                            .probability_backlog_growth_above_0_05
-                            >= 0.50
-                            ? "High"
-                            : "Elevated"
-                          } backlog-drift risk: {
-                            fmtPct(
-                              rob
-                              .probability_backlog_growth_above_0_05
-                            )
-                          } of validation runs exceeded +0.05 backlog/hr.
-                        </div>
-                      }
-                    </div>
-                  }
-                </div>
-              );
-            }
-          )}
-        </section>
-      }
-
-      {cmp &&
-        <section style={{
-          ...card,
-          marginTop:18
-        }}>
-          <h2 style={{
-            marginTop:0
-          }}>
-            AS-IS vs selected TO-BE
-          </h2>
-
-          <div style={{
-            fontSize:13,
-            color:"#6b7280",
-            marginBottom:12
-          }}>
-            {cmp.baseline_architecture} → {cmp.future_architecture}
-            {cmp.comparison_method &&
-              <>
-                {" "}· {
-                  cmp.comparison_method.replications
-                } paired replications · {
-                  cmp.comparison_method.cases_per_replication
-                } cases each · common random numbers
-              </>
-            }
-          </div>
-
-          {model && opt?.results?.[0]?.best &&
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(420px,1fr))",gap:14,marginBottom:16}}>
+            <div style={{marginTop:16,padding:"12px 14px",border:"1px solid #bfdbfe",background:"#eff6ff",borderRadius:10,display:"flex",justifyContent:"space-between",gap:12,alignItems:"center",flexWrap:"wrap"}}>
               <div>
-                <div style={{fontWeight:800,marginBottom:6}}>AS-IS workflow</div>
-                <ProcessGraph model={model} />
+                <div style={{fontSize:12,fontWeight:900,color:"#1d4ed8"}}>Stage 2 — evaluate generated candidates</div>
+                <div style={{fontSize:11,color:"#475569",marginTop:3,lineHeight:1.45}}>Runs every generated design as strict cells and as symmetric controlled overflow against one common global baseline. Uses 6 paired replications × 600 cases with the current overflow threshold and cap.</div>
               </div>
-              <div>
-                <div style={{fontWeight:800,marginBottom:6}}>Selected TO-BE workflow</div>
-                <ProcessGraph model={applyDesignToModel(model,cmp.future_architecture,opt.results[0].best.design)} />
-              </div>
+              <button onClick={evaluateGeneratedCandidates} disabled={candidateEvaluationBusy} style={{padding:"9px 12px",borderRadius:8,border:"1px solid #2563eb",background:candidateEvaluationBusy?"#cbd5e1":"#2563eb",color:"#fff",fontWeight:800,cursor:candidateEvaluationBusy?"default":"pointer"}}>
+                {candidateEvaluationBusy ? "Evaluating candidates..." : "Run Candidate Evaluation Matrix"}
+              </button>
             </div>
-          }
+            {candidateEvaluationStatus && <div style={{marginTop:10,fontSize:12,fontWeight:700,color:candidateEvaluationStatus.startsWith("Candidate evaluation error")?"#b91c1c":"#475569"}}>{candidateEvaluationStatus}</div>}
+          </>}
+        </section>
 
-          <div style={{
-            overflowX:"auto"
-          }}>
-            <table style={{
-              width:"100%",
-              borderCollapse:"collapse",
-              fontSize:13
-            }}>
-              <thead>
-                <tr>
-                  <th align="left" style={{padding:8}}>Metric</th>
-                  <th align="right" style={{padding:8}}>AS-IS</th>
-                  <th align="right" style={{padding:8}}>TO-BE</th>
-                  <th align="right" style={{padding:8}}>Change</th>
-                </tr>
-              </thead>
-              <tbody>
-                {[
-                  [
-                    "Annual cost",
-                    cmp.baseline_metrics.annual_cost,
-                    cmp.future_metrics.annual_cost,
-                    money,
-                    true,
-                    "relative"
-                  ],
-                  [
-                    "Throughput / hr",
-                    cmp.baseline_metrics.throughput_per_hour,
-                    cmp.future_metrics.throughput_per_hour,
-                    v => Number(v).toFixed(2),
-                    false,
-                    "relative"
-                  ],
-                  [
-                    "Flow balance",
-                    cmp.baseline_metrics.flow_balance,
-                    cmp.future_metrics.flow_balance,
-                    fmtFlow,
-                    false,
-                    "points"
-                  ],
-                  [
-                    "P95 cycle (min)",
-                    cmp.baseline_metrics.p95_cycle_minutes,
-                    cmp.future_metrics.p95_cycle_minutes,
-                    v => Number(v).toFixed(1),
-                    true,
-                    "relative"
-                  ],
-                  [
-                    "SLA attainment",
-                    cmp.baseline_metrics.sla_attainment,
-                    cmp.future_metrics.sla_attainment,
-                    fmtPct,
-                    false,
-                    "points"
-                  ],
-                  [
-                    "Max utilization",
-                    cmp.baseline_metrics.max_resource_utilization,
-                    cmp.future_metrics.max_resource_utilization,
-                    fmtPct,
-                    true,
-                    "points"
-                  ],
-                  [
-                    "Backlog growth / hr",
-                    cmp.baseline_metrics.backlog_growth_per_hour,
-                    cmp.future_metrics.backlog_growth_per_hour,
-                    v => Number(v).toFixed(2),
-                    true,
-                    "relative"
-                  ]
-                ].map(([label,a,b,fmt,lowerBetter,changeType]) => {
-                  const delta = Number(b) - Number(a);
-                  const pct = Math.abs(Number(a)) > 1e-9
-                    ? 100 * delta / Math.abs(Number(a))
-                    : null;
-                  const improved = lowerBetter
-                    ? delta < 0
-                    : delta > 0;
-                  return (
-                    <tr key={label} style={{borderTop:"1px solid #eee"}}>
-                      <td style={{padding:8}}>{label}</td>
-                      <td align="right" style={{padding:8}}>{fmt(a)}</td>
-                      <td align="right" style={{padding:8,fontWeight:700}}>{fmt(b)}</td>
-                      <td align="right" style={{
-                        padding:8,
-                        color: Math.abs(delta) < 1e-9
-                          ? "#6b7280"
-                          : improved
-                            ? "#166534"
-                            : "#991b1b"
-                      }}>
-                        {changeType === "points"
-                          ? fmtPctPoints(delta)
-                          : pct === null
-                            ? `${delta >= 0 ? "+" : ""}${delta.toFixed(2)}`
-                            : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+        {candidateEvaluation?.candidates?.length > 0 && <section id="candidate-evaluation-matrix" style={{...card,marginTop:18}}>
+          <div style={{fontSize:11,fontWeight:800,color:"#1d4ed8",textTransform:"uppercase",letterSpacing:".06em"}}>Stage 2 simulation evaluation</div>
+          <h2 style={{margin:"4px 0 5px"}}>Candidate Evaluation Matrix</h2>
+          <div style={muted}>Structural coherence and operational performance are shown together. The matrix deliberately does not declare a winner.</div>
+          <CandidateEvaluationMatrix evaluation={candidateEvaluation} />
+        </section>}
+
+        <section style={{...card,marginTop:18,background:"#f8fafc"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+            <div>
+              <h2 style={{margin:"0 0 5px"}}>Phase 1 experiment — Global vs Cellular / No Overflow</h2>
+              <div style={muted}>Uses the same process architecture, arrivals, service-time distributions, routing probabilities, total resource capacity, and common random-number seeds. Only resource pooling is changed.</div>
+            </div>
+            <button
+              onClick={runPhase1Experiment}
+              disabled={!phase1Ready || experimentBusy}
+              style={{padding:"10px 14px",borderRadius:8,border:"1px solid #4f46e5",background:phase1Ready && !experimentBusy?"#4f46e5":"#cbd5e1",color:"#fff",fontWeight:800,cursor:phase1Ready && !experimentBusy?"pointer":"default"}}
+            >
+              {experimentBusy ? "Running paired experiment..." : "Run Global vs Cellular / No Overflow"}
+            </button>
+          </div>
+
+          {!phase1Ready && <div style={{marginTop:12,padding:"10px 12px",border:"1px solid #fed7aa",background:"#fff7ed",borderRadius:8,fontSize:12,color:"#9a3412"}}>Before running, every enabled activity must belong to exactly one cell and every resource pool must be partitioned exactly to its global baseline capacity.</div>}
+          {experimentStatus && <div style={{marginTop:12,fontSize:12,fontWeight:700,color:experimentStatus.startsWith("Experiment error")?"#b91c1c":"#475569"}}>{experimentStatus}</div>}
+
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(210px,1fr))",gap:10,marginTop:14}}>
+            <Step n="1" title="Define cells" text="Assign activities and resource capacity manually." />
+            <Step n="2" title="Global baseline" text="Run with globally pooled baseline resources." />
+            <Step n="3" title="Cellular / no overflow" text="Partition the same capacity into exclusive local cell pools." />
+            <Step n="4" title="Paired comparison" text="Use identical seeds so demand and service-time randomness are paired." />
           </div>
         </section>
-      }
+
+        <section style={{...card,marginTop:18,background:"#f8fafc"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+            <div>
+              <h2 style={{margin:"0 0 5px"}}>Phase 2 experiment — Controlled Overflow</h2>
+              <div style={muted}>Local cell capacity is always tried first. Cross-cell capacity is used only after the local wait exceeds the trigger, only into cells explicitly marked <b>May receive overflow</b>, and without creating any additional capacity.</div>
+            </div>
+            <button
+              onClick={runPhase2Experiment}
+              disabled={!phase2Ready || phase2Busy}
+              style={{padding:"10px 14px",borderRadius:8,border:"1px solid #0f766e",background:phase2Ready && !phase2Busy?"#0f766e":"#cbd5e1",color:"#fff",fontWeight:800,cursor:phase2Ready && !phase2Busy?"pointer":"default"}}
+            >
+              {phase2Busy ? "Running controlled overflow..." : "Run Controlled Overflow Comparison"}
+            </button>
+          </div>
+
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:10,marginTop:14}}>
+            <label style={{fontSize:12,fontWeight:700}}>Local wait trigger (minutes)
+              <input type="number" min="0" step="1" value={overflowWaitThreshold} onChange={e => setOverflowWaitThreshold(e.target.value)} style={{display:"block",width:"100%",marginTop:5,padding:"7px 8px",border:"1px solid #cbd5e1",borderRadius:7}} />
+            </label>
+            <label style={{fontSize:12,fontWeight:700}}>Maximum overflow share (%)
+              <input type="number" min="0" max="100" step="1" value={maxOverflowPercent} onChange={e => setMaxOverflowPercent(e.target.value)} style={{display:"block",width:"100%",marginTop:5,padding:"7px 8px",border:"1px solid #cbd5e1",borderRadius:7}} />
+            </label>
+          </div>
+
+          {!phase2Ready && <div style={{marginTop:12,padding:"10px 12px",border:"1px solid #fed7aa",background:"#fff7ed",borderRadius:8,fontSize:12,color:"#9a3412"}}>Phase 2 requires a valid Phase 1 cell design and at least one cell marked <b>May receive overflow</b>.</div>}
+          {phase2Status && <div style={{marginTop:12,fontSize:12,fontWeight:700,color:phase2Status.startsWith("Experiment error")?"#b91c1c":"#475569"}}>{phase2Status}</div>}
+        </section>
+
+        <section style={{...card,marginTop:18,background:"#f8fafc"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+            <div>
+              <h2 style={{margin:"0 0 5px"}}>Phase 3 experiment — Scheduling Policy Matrix</h2>
+              <div style={muted}>Compares FCFS with SLA-risk dispatching across Global, Cellular / No Overflow, and Cellular / Controlled Overflow. All six scenarios use the same generated case arrivals, routes, and sampled service times within each replication.</div>
+            </div>
+            <button
+              onClick={runPhase3Experiment}
+              disabled={!phase2Ready || phase3Busy}
+              style={{padding:"10px 14px",borderRadius:8,border:"1px solid #7c3aed",background:phase2Ready && !phase3Busy?"#7c3aed":"#cbd5e1",color:"#fff",fontWeight:800,cursor:phase2Ready && !phase3Busy?"pointer":"default"}}
+            >
+              {phase3Busy ? "Running scheduling matrix..." : "Run Scheduling Matrix"}
+            </button>
+          </div>
+          <div style={{marginTop:12,padding:"10px 12px",border:"1px solid #ddd6fe",background:"#f5f3ff",borderRadius:8,fontSize:12,color:"#5b21b6",lineHeight:1.55}}>
+            <b>SLA-risk</b> dispatches the waiting job with the smallest projected slack: SLA due time minus current time minus remaining sampled processing time. Pure EDD is not shown separately because the current model uses the same SLA offset for all cases, so EDD largely collapses to arrival order.
+          </div>
+          {!phase2Ready && <div style={{marginTop:12,padding:"10px 12px",border:"1px solid #fed7aa",background:"#fff7ed",borderRadius:8,fontSize:12,color:"#9a3412"}}>Phase 3 requires the same valid cell design and overflow-receiver configuration as Phase 2.</div>}
+          {phase3Status && <div style={{marginTop:12,fontSize:12,fontWeight:700,color:phase3Status.startsWith("Experiment error")?"#b91c1c":"#475569"}}>{phase3Status}</div>}
+        </section>
+
+        <section style={{...card,marginTop:18,background:"#f8fafc"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+            <div>
+              <h2 style={{margin:"0 0 5px"}}>Overflow-threshold sensitivity</h2>
+              <div style={muted}>Runs controlled overflow at 0, 15, 30, 60, 120 minutes and an effectively infinite threshold. Every threshold uses the same cases and random seeds, so differences isolate the overflow trigger.</div>
+            </div>
+            <button
+              onClick={runOverflowSensitivity}
+              disabled={!phase2Ready || sensitivityBusy}
+              style={{padding:"10px 14px",borderRadius:8,border:"1px solid #0369a1",background:phase2Ready && !sensitivityBusy?"#0369a1":"#cbd5e1",color:"#fff",fontWeight:800,cursor:phase2Ready && !sensitivityBusy?"pointer":"default"}}
+            >
+              {sensitivityBusy ? "Running sensitivity..." : "Run Overflow Threshold Sensitivity"}
+            </button>
+          </div>
+          <div style={{marginTop:12,padding:"10px 12px",border:"1px solid #bae6fd",background:"#f0f9ff",borderRadius:8,fontSize:12,color:"#075985",lineHeight:1.55}}>
+            The final row behaves as <b>no overflow</b>. The main decision signal is whether a threshold preserves most of the cycle-time/WIP benefit while keeping maximum resource utilization at or below about 95%.
+          </div>
+          {!phase2Ready && <div style={{marginTop:12,padding:"10px 12px",border:"1px solid #fed7aa",background:"#fff7ed",borderRadius:8,fontSize:12,color:"#9a3412"}}>Sensitivity requires the same valid cell design and overflow-receiver configuration as Phase 2.</div>}
+          {sensitivityStatus && <div style={{marginTop:12,fontSize:12,fontWeight:700,color:sensitivityStatus.startsWith("Experiment error")?"#b91c1c":"#475569"}}>{sensitivityStatus}</div>}
+        </section>
+
+        {experiment && <section id="phase1-results" style={{...card,marginTop:18}}>
+          <h2 style={{marginTop:0}}>Phase 1 paired results</h2>
+          <div style={{fontSize:12,color:"#64748b",marginBottom:12}}>
+            {experiment.replications} replications · {experiment.cases_per_replication} cases per replication · cellular minus global deltas are based on paired common-random-number runs.
+          </div>
+          <ComparisonTable experiment={experiment} />
+        </section>}
+
+        {phase2Experiment && <section id="phase2-results" style={{...card,marginTop:18}}>
+          <h2 style={{marginTop:0}}>Phase 2 controlled-overflow results</h2>
+          <div style={{fontSize:12,color:"#64748b",marginBottom:12,lineHeight:1.55}}>
+            {phase2Experiment.replications} replications · {phase2Experiment.cases_per_replication} cases per replication · trigger {fmtNum(phase2Experiment.overflow_policy?.local_wait_threshold_minutes,2)} min · max overflow {fmtPct(phase2Experiment.overflow_policy?.max_overflow_fraction)}.
+          </div>
+          <Phase2ComparisonTable experiment={phase2Experiment} />
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))",gap:10,marginTop:14}}>
+            <Summary label="Mean overflow share" value={fmtPct(phase2Experiment.overflow?.mean_fraction)} />
+            <Summary label="Mean overflow count" value={fmtNum(phase2Experiment.overflow?.mean_count,2)} />
+            <Summary label="Mean wait saved / overflow" value={`${fmtNum(phase2Experiment.overflow?.mean_wait_saved_minutes,2)} min`} />
+          </div>
+        </section>}
+
+        {structuralAnalysis && phase2Experiment && <section id="structure-performance-interpretation" style={{...card,marginTop:18}}>
+          <h2 style={{marginTop:0}}>Structure ↔ performance interpretation</h2>
+          <div style={{fontSize:12,color:"#64748b",lineHeight:1.55,marginBottom:14}}>
+            Connects structural coherence with the paired simulation results. These statements describe patterns in the current model; they do not treat the structural score as an operational optimum or claim causality.
+          </div>
+          <StructurePerformanceInterpretation analysis={structuralAnalysis} experiment={phase2Experiment} />
+        </section>}
+
+        {phase3Experiment && <section id="phase3-results" style={{...card,marginTop:18}}>
+          <h2 style={{marginTop:0}}>Phase 3 scheduling-policy matrix</h2>
+          <div style={{fontSize:12,color:"#64748b",marginBottom:12,lineHeight:1.55}}>
+            {phase3Experiment.replications} replications · {phase3Experiment.cases_per_replication} cases per replication · common arrivals, routes, and sampled service times across all six scenarios.
+          </div>
+          <SchedulingMatrixTable experiment={phase3Experiment} />
+          <div style={{marginTop:14,padding:"10px 12px",border:"1px solid #e2e8f0",borderRadius:10,background:"#f8fafc",fontSize:12,color:"#475569",lineHeight:1.55}}>
+            {phase3Experiment.note}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))",gap:10,marginTop:14}}>
+            <Summary label="Overflow share · FCFS" value={fmtPct(phase3Experiment.overflow?.fcfs_mean_fraction)} />
+            <Summary label="Overflow share · SLA-risk" value={fmtPct(phase3Experiment.overflow?.sla_risk_mean_fraction)} />
+          </div>
+        </section>}
+
+        {sensitivityResults && <section id="sensitivity-results" style={{...card,marginTop:18}}>
+          <h2 style={{marginTop:0}}>Overflow-threshold sensitivity results</h2>
+          <div style={{fontSize:12,color:"#64748b",marginBottom:12,lineHeight:1.55}}>
+            {sensitivityResults[0]?.replications || 0} replications · {sensitivityResults[0]?.cases_per_replication || 0} cases per replication · identical seeds across thresholds · maximum overflow share {fmtNum(Number(maxOverflowPercent),2)}%.
+          </div>
+          <OverflowSensitivityTable rows={sensitivityResults} />
+        </section>}
+      </>}
     </main>
+  );
+}
+
+function Summary({label,value}) {
+  return (
+    <div style={{padding:"12px 14px",border:"1px solid #e2e8f0",borderRadius:12,background:"#f8fafc"}}>
+      <div style={{fontSize:11,color:"#64748b",textTransform:"uppercase",fontWeight:800}}>{label}</div>
+      <div style={{fontSize:18,fontWeight:800,marginTop:5}}>{String(value ?? "—")}</div>
+    </div>
+  );
+}
+
+function fmtNum(v,digits=2) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "—";
+  return n.toFixed(digits).replace(/\.?0+$/,"");
+}
+
+function fmtPct(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? `${fmtNum(100*n,2)}%` : "—";
+}
+
+function StructuralAnalysisPanel({analysis}) {
+  const entropy = analysis?.entropy || {};
+  const penalties = analysis?.penalties || {};
+  const score = analysis?.score || {};
+  const route = analysis?.routing_localization || {};
+  const fit = analysis?.resource_fit || {};
+  const balance = analysis?.balance || {};
+  const entropyRows = [
+    ["Work type","work_type"],
+    ["Routing / next activity","routing"],
+    ["Skill requirement","skill"],
+    ["Activity pattern","activity"],
+    ["Processing class","processing"]
+  ];
+  const finite = v => v !== null && v !== undefined && Number.isFinite(Number(v));
+  const pct = v => finite(v) ? `${fmtNum(100*Number(v),2)}%` : "N/A";
+  return <div style={{marginTop:16}}>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:10}}>
+      <Summary label="Decision-support score" value={finite(score.decision_support_score)?fmtNum(score.decision_support_score,2):"N/A"} />
+      <Summary label="Structural complexity" value={finite(score.weighted_structural_complexity)?fmtNum(score.weighted_structural_complexity,3):"N/A"} />
+      <Summary label="Cross-cell routing" value={pct(route.cross_cell_transition_fraction)} />
+      <Summary label="Skill coverage" value={pct(fit.skill_coverage_fraction)} />
+      <Summary label="Workload imbalance CV" value={fmtNum(balance.workload_cv,3)} />
+      <Summary label="Small cells" value={`${balance.small_cell_count ?? 0} / ${analysis.cell_count ?? 0}`} />
+    </div>
+
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(360px,1fr))",gap:14,marginTop:14}}>
+      <div style={{padding:14,border:"1px solid #e2e8f0",borderRadius:12,background:"#f8fafc"}}>
+        <div style={{fontWeight:800,fontSize:13}}>Conditional entropy by cell</div>
+        <div style={{fontSize:11,color:"#64748b",marginTop:4}}>Lower normalized conditional entropy means more of that variety is localized inside cells. N/A means the current model does not contain enough information for that dimension.</div>
+        <div style={{overflowX:"auto",marginTop:8}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+            <thead><tr><th align="left" style={{padding:"6px 4px",borderBottom:"1px solid #e2e8f0"}}>Dimension</th><th align="right" style={{padding:"6px 4px",borderBottom:"1px solid #e2e8f0"}}>H global</th><th align="right" style={{padding:"6px 4px",borderBottom:"1px solid #e2e8f0"}}>H | Cell</th><th align="right" style={{padding:"6px 4px",borderBottom:"1px solid #e2e8f0"}}>Reduction</th></tr></thead>
+            <tbody>{entropyRows.map(([label,key]) => { const x=entropy[key] || {}; return <tr key={key}>
+              <td style={{padding:"6px 4px",borderBottom:"1px solid #f1f5f9",fontWeight:700}}>{label}</td>
+              <td align="right" style={{padding:"6px 4px",borderBottom:"1px solid #f1f5f9"}}>{finite(x.global_entropy_bits)?fmtNum(x.global_entropy_bits,3):"N/A"}</td>
+              <td align="right" style={{padding:"6px 4px",borderBottom:"1px solid #f1f5f9"}}>{finite(x.conditional_entropy_bits)?fmtNum(x.conditional_entropy_bits,3):"N/A"}</td>
+              <td align="right" style={{padding:"6px 4px",borderBottom:"1px solid #f1f5f9",fontWeight:800}}>{pct(x.entropy_reduction_fraction)}</td>
+            </tr>; })}</tbody>
+          </table>
+        </div>
+      </div>
+
+      <div style={{padding:14,border:"1px solid #e2e8f0",borderRadius:12,background:"#f8fafc"}}>
+        <div style={{fontWeight:800,fontSize:13}}>Structural penalties / tradeoffs</div>
+        <div style={{fontSize:11,color:"#64748b",marginTop:4}}>These prevent a low-entropy design from being treated as automatically good. Values are normalized proxies from 0 to 1.</div>
+        <div style={{display:"grid",gap:7,marginTop:10}}>
+          {[
+            ["Fragmentation",penalties.fragmentation_penalty],
+            ["Capacity imbalance",penalties.capacity_imbalance_penalty],
+            ["Scarce-skill duplication",penalties.skill_duplication_penalty],
+            ["Pooling loss",penalties.pooling_loss_penalty],
+            ["Expected overflow pressure",penalties.overflow_pressure_penalty]
+          ].map(([label,value]) => <div key={label} style={{display:"flex",justifyContent:"space-between",gap:12,padding:"6px 8px",border:"1px solid #e2e8f0",borderRadius:8,background:"#fff",fontSize:12}}><span>{label}</span><b>{fmtNum(value,3)}</b></div>)}
+        </div>
+      </div>
+    </div>
+
+    {Array.isArray(balance.cells) && balance.cells.length > 0 && <div style={{marginTop:14,overflowX:"auto"}}>
+      <div style={{fontWeight:800,fontSize:13,marginBottom:6}}>Cell load / capacity structure</div>
+      <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,minWidth:720}}>
+        <thead><tr><th align="left" style={{padding:"6px 4px",borderBottom:"1px solid #e2e8f0"}}>Cell</th><th align="right" style={{padding:"6px 4px",borderBottom:"1px solid #e2e8f0"}}>Activities</th><th align="right" style={{padding:"6px 4px",borderBottom:"1px solid #e2e8f0"}}>Expected service demand min/hr</th><th align="right" style={{padding:"6px 4px",borderBottom:"1px solid #e2e8f0"}}>Assigned capacity min/hr</th><th align="right" style={{padding:"6px 4px",borderBottom:"1px solid #e2e8f0"}}>Structural utilization proxy</th></tr></thead>
+        <tbody>{balance.cells.map(c => <tr key={c.cell_id}>
+          <td style={{padding:"6px 4px",borderBottom:"1px solid #f1f5f9",fontWeight:700}}>{c.cell_name || c.cell_id}</td>
+          <td align="right" style={{padding:"6px 4px",borderBottom:"1px solid #f1f5f9"}}>{c.activity_count}</td>
+          <td align="right" style={{padding:"6px 4px",borderBottom:"1px solid #f1f5f9"}}>{fmtNum(c.expected_service_demand_minutes_per_hour,2)}</td>
+          <td align="right" style={{padding:"6px 4px",borderBottom:"1px solid #f1f5f9"}}>{fmtNum(c.assigned_capacity_minutes_per_hour,2)}</td>
+          <td align="right" style={{padding:"6px 4px",borderBottom:"1px solid #f1f5f9",fontWeight:800}}>{pct(c.structural_utilization_proxy)}</td>
+        </tr>)}</tbody>
+      </table>
+    </div>}
+
+    {Array.isArray(analysis.notes) && analysis.notes.length > 0 && <div style={{marginTop:12,padding:"10px 12px",border:"1px solid #dbeafe",background:"#eff6ff",borderRadius:10,fontSize:11,color:"#1e3a8a",lineHeight:1.55}}>
+      {analysis.notes.map((n,i) => <div key={i}>{i+1}. {n}</div>)}
+    </div>}
+  </div>;
+}
+
+
+function SavedCellDesignsPanel({designs,currentName,onNameChange,onSaveCurrent,onLoad,onLoadOverflow,onDelete,hasCurrent}) {
+  const formatDate = value => {
+    if (!value) return "";
+    try { return new Date(value).toLocaleString(); } catch (_) { return ""; }
+  };
+  return <div style={{marginTop:14}}>
+    <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+      <input
+        type="text"
+        value={currentName}
+        onChange={e => onNameChange(e.target.value)}
+        placeholder="Name current design (optional)"
+        style={{minWidth:260,flex:"1 1 260px",padding:"9px 10px",border:"1px solid #cbd5e1",borderRadius:8}}
+      />
+      <button
+        onClick={onSaveCurrent}
+        disabled={!hasCurrent}
+        style={{padding:"9px 12px",borderRadius:8,border:"1px solid #475569",background:hasCurrent?"#475569":"#cbd5e1",color:"#fff",fontWeight:800,cursor:hasCurrent?"pointer":"default"}}
+      >
+        Save current editor design
+      </button>
+    </div>
+    {designs.length === 0 ? <div style={{marginTop:12,fontSize:12,color:"#64748b"}}>No saved designs yet. Use <b>Save</b> beside any generated candidate, or save the current edited design above.</div> :
+      <div style={{marginTop:12,overflowX:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,minWidth:760}}>
+          <thead><tr style={{background:"#f8fafc"}}>
+            {["Saved design","Source","Cells","Saved","Actions"].map(h => <th key={h} style={th}>{h}</th>)}
+          </tr></thead>
+          <tbody>{designs.map(d => <tr key={d.id}>
+            <td style={td}><b>{d.name}</b>{d.source_candidate_id && <div style={{fontSize:9,color:"#64748b",marginTop:2}}>{d.source_candidate_id}</div>}</td>
+            <td style={td}>{d.source === "generated" ? "Generated candidate" : "Editor snapshot"}</td>
+            <td style={td}>{(d.cells || []).length}</td>
+            <td style={td}>{formatDate(d.created_at)}</td>
+            <td style={td}><div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+              <button onClick={() => onLoad(d)} style={{padding:"6px 8px",borderRadius:7,border:"1px solid #7c3aed",background:"#fff",color:"#6d28d9",fontWeight:800,cursor:"pointer"}}>Load</button>
+              <button onClick={() => onLoadOverflow(d)} style={{padding:"6px 8px",borderRadius:7,border:"1px solid #059669",background:"#fff",color:"#047857",fontWeight:800,cursor:"pointer"}}>Load + overflow</button>
+              <button onClick={() => onDelete(d.id)} style={{padding:"6px 8px",borderRadius:7,border:"1px solid #dc2626",background:"#fff",color:"#b91c1c",fontWeight:800,cursor:"pointer"}}>Delete</button>
+            </div></td>
+          </tr>)}</tbody>
+        </table>
+      </div>}
+    <div style={{marginTop:10,fontSize:11,color:"#64748b",lineHeight:1.5}}>Saved designs are stored locally in this browser. Loading a design creates a fresh editable copy, so later edits do not alter the saved snapshot unless you save another snapshot.</div>
+  </div>;
+}
+
+
+function CandidateDesignsPanel({candidateSet,model,onLoad,onLoadOverflow,onSave}) {
+  const finite = v => v !== null && v !== undefined && Number.isFinite(Number(v));
+  const candidates = candidateSet?.candidates || [];
+  const byK = [...new Set(candidates.map(c => c.k))].sort((a,b) => a-b);
+  const activityName = id => (model?.activities || []).find(a => a.id === id)?.name || id;
+  const resourceName = id => (model?.resources || []).find(r => r.id === id)?.name || id;
+
+  return <div style={{marginTop:16}}>
+    {byK.map(k => <div key={k} style={{marginTop:14}}>
+      <div style={{fontWeight:900,fontSize:14,color:"#334155"}}>{k}-cell alternatives</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))",gap:12,marginTop:8}}>
+        {candidates.filter(c => c.k === k).map(c => {
+          const a = c.structural_analysis || {};
+          const score = a.score?.decision_support_score;
+          const cross = a.routing_localization?.cross_cell_transition_fraction;
+          const cv = a.balance?.workload_cv;
+          const coverage = a.resource_fit?.skill_coverage_fraction;
+          return <div key={c.id} style={{border:"1px solid #ddd6fe",borderRadius:12,padding:14,background:"#fafafa"}}>
+            <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"flex-start"}}>
+              <div>
+                <div style={{fontSize:11,fontWeight:900,color:"#7c3aed",textTransform:"uppercase"}}>{c.profile_label}</div>
+                <div style={{fontSize:18,fontWeight:900,marginTop:3}}>{k} cells</div>
+              </div>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap",justifyContent:"flex-end"}}>
+                <button onClick={() => onLoad(c)} style={{padding:"7px 9px",borderRadius:7,border:"1px solid #7c3aed",background:"#fff",color:"#6d28d9",fontWeight:800,cursor:"pointer"}}>Load</button>
+                <button onClick={() => onLoadOverflow(c)} style={{padding:"7px 9px",borderRadius:7,border:"1px solid #059669",background:"#fff",color:"#047857",fontWeight:800,cursor:"pointer"}}>Load + overflow</button>
+                <button onClick={() => onSave(c)} style={{padding:"7px 9px",borderRadius:7,border:"1px solid #64748b",background:"#fff",color:"#334155",fontWeight:800,cursor:"pointer"}}>Save design</button>
+              </div>
+            </div>
+
+            <div style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:7,marginTop:10}}>
+              <MiniStat label="Structural score" value={finite(score)?fmtNum(score,2):"N/A"} />
+              <MiniStat label="Cross-cell routing" value={finite(cross)?fmtPct(cross):"N/A"} />
+              <MiniStat label="Workload CV" value={finite(cv)?fmtNum(cv,3):"N/A"} />
+              <MiniStat label="Skill coverage" value={finite(coverage)?fmtPct(coverage):"N/A"} />
+            </div>
+
+            <div style={{marginTop:10,display:"grid",gap:8}}>
+              {(c.cells || []).map((cell,idx) => <div key={cell.id} style={{padding:"9px 10px",border:"1px solid #e2e8f0",borderRadius:9,background:"#fff"}}>
+                <div style={{fontSize:12,fontWeight:900}}>Cell {idx+1}</div>
+                <div style={{fontSize:11,color:"#475569",marginTop:4,lineHeight:1.45}}><b>Activities:</b> {(cell.activity_ids || []).map(activityName).join(", ") || "—"}</div>
+                <div style={{fontSize:11,color:"#475569",marginTop:3,lineHeight:1.45}}><b>Resources:</b> {Object.entries(cell.resource_capacities || {}).filter(([,v]) => Number(v) > 0).map(([rid,v]) => `${resourceName(rid)}×${v}`).join(", ") || "—"}</div>
+                <div style={{fontSize:11,color:"#64748b",marginTop:5,lineHeight:1.45}}>{c.explanations?.[idx]?.text}</div>
+              </div>)}
+            </div>
+
+            <div style={{fontSize:10,color:"#64748b",marginTop:9}}>Similarity mix: routing {fmtPct(c.similarity_weights?.routing)} · topology {fmtPct(c.similarity_weights?.topology)} · processing {fmtPct(c.similarity_weights?.processing)} · resource {fmtPct(c.similarity_weights?.resource)}</div>
+          </div>;
+        })}
+      </div>
+    </div>)}
+    <div style={{marginTop:12,fontSize:11,color:"#64748b",lineHeight:1.5}}>These alternatives are not ranked as operational winners. Load any candidate into the editor, modify it if desired, then use the existing structural analysis and paired simulation experiments to evaluate it.</div>
+  </div>;
+}
+
+function AutomatedCellularizationPanel({result,onLoad,onLoadOverflow,onSave}) {
+  const finite = v => v !== null && v !== undefined && Number.isFinite(Number(v));
+  const rows = result?.candidates || [];
+  const frontierIds = new Set(result?.pareto_candidate_ids || []);
+  const labels = result?.tradeoff_labels || [];
+  const labelById = {};
+  for (const x of labels) {
+    if (!labelById[x.candidate_id]) labelById[x.candidate_id] = [];
+    labelById[x.candidate_id].push(x);
+  }
+  const metric = (row,key) => row?.cellular_controlled_overflow?.metrics?.[key];
+  if (result?.simulation_blocked) {
+    const blockers = result?.blocking_activities || [];
+    return <div style={{marginTop:14}}>
+      <div style={{padding:"12px 14px",border:"1px solid #fed7aa",background:"#fff7ed",borderRadius:10,color:"#9a3412"}}>
+        <div style={{fontWeight:900,fontSize:13}}>Stage 1 completed; Stage 2 simulation is blocked</div>
+        <div style={{fontSize:11,marginTop:5,lineHeight:1.5}}>The app generated structural cell alternatives, but it will not fabricate service times. Resolve these activities before simulation:</div>
+        <ul style={{margin:"8px 0 0 18px",fontSize:11,lineHeight:1.55}}>
+          {blockers.map((b,i) => <li key={`${b.activity_id || "activity"}-${i}`}><b>{b.activity_name || b.activity_id || "Activity"}</b>{b.reason ? ` — ${b.reason}` : ""}</li>)}
+        </ul>
+      </div>
+      <div style={{marginTop:12,fontSize:12,fontWeight:900}}>Generated structural candidates</div>
+      <div style={{overflowX:"auto",marginTop:6}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:11,minWidth:850}}>
+        <thead><tr style={{background:"#f8fafc"}}>{["Candidate","Cells","Structural score","Cross-cell routing","Workload CV","Action"].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
+        <tbody>{rows.map(row => {
+          const score = row?.structural_analysis?.score?.decision_support_score;
+          const cross = row?.structural_analysis?.routing_localization?.cross_cell_transition_fraction;
+          const cv = row?.structural_analysis?.balance?.workload_cv;
+          return <tr key={row.id}>
+            <td style={td}><b>{row.profile_label || row.id}</b></td>
+            <td style={td}>{row.k}</td>
+            <td style={td}>{finite(score)?fmtNum(score,2):"N/A"}</td>
+            <td style={td}>{finite(cross)?fmtPct(cross):"N/A"}</td>
+            <td style={td}>{finite(cv)?fmtNum(cv,3):"N/A"}</td>
+            <td style={td}><div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+              <button onClick={() => onLoad(row)} style={{padding:"6px 8px",borderRadius:7,border:"1px solid #7c3aed",background:"#fff",color:"#6d28d9",fontWeight:800,cursor:"pointer"}}>Load</button>
+              <button onClick={() => onLoadOverflow(row)} style={{padding:"6px 8px",borderRadius:7,border:"1px solid #059669",background:"#fff",color:"#047857",fontWeight:800,cursor:"pointer"}}>Load + overflow</button>
+              <button onClick={() => onSave(row)} style={{padding:"6px 8px",borderRadius:7,border:"1px solid #64748b",background:"#fff",color:"#334155",fontWeight:800,cursor:"pointer"}}>Save</button>
+            </div></td>
+          </tr>;
+        })}</tbody>
+      </table></div>
+      <div style={{marginTop:10,fontSize:11,color:"#64748b",lineHeight:1.5}}>Candidate generation is still useful here; only the simulation/Pareto stage is deferred until the service-time model is complete.</div>
+    </div>;
+  }
+  const frontier = rows.filter(r => frontierIds.has(r.id));
+  const dominated = rows.filter(r => !frontierIds.has(r.id));
+  const renderRow = row => {
+    const score = row?.structural_analysis?.score?.decision_support_score;
+    const cross = row?.structural_analysis?.routing_localization?.cross_cell_transition_fraction;
+    const cv = row?.structural_analysis?.balance?.workload_cv;
+    const tags = labelById[row.id] || [];
+    return <tr key={row.id} style={{background:frontierIds.has(row.id)?"#f0fdf4":"#fff"}}>
+      <td style={td}>
+        <div style={{fontWeight:900}}>{row.profile_label || row.id}</div>
+        {tags.map(t => <div key={t.role} style={{marginTop:4,display:"inline-block",marginRight:4,padding:"2px 6px",borderRadius:999,background:"#dcfce7",color:"#166534",fontSize:9,fontWeight:900}}>{t.label}</div>)}
+      </td>
+      <td style={td}>{row.k}</td>
+      <td style={td}>{finite(score)?fmtNum(score,2):"N/A"}</td>
+      <td style={td}>{finite(cross)?fmtPct(cross):"N/A"}</td>
+      <td style={td}>{finite(cv)?fmtNum(cv,3):"N/A"}</td>
+      <td style={td}>{fmtNum(metric(row,"throughput_per_hour"),2)}</td>
+      <td style={td}>{fmtNum(metric(row,"mean_cycle_minutes"),2)}</td>
+      <td style={td}>{fmtNum(metric(row,"p95_cycle_minutes"),2)}</td>
+      <td style={td}>{fmtNum(metric(row,"avg_wip"),2)}</td>
+      <td style={td}>{fmtPct(metric(row,"sla_attainment"))}</td>
+      <td style={td}>{fmtPct(metric(row,"max_resource_utilization"))}</td>
+      <td style={td}>{fmtNum(metric(row,"backlog_growth_per_hour"),2)}</td>
+      <td style={td}>{fmtPct(row?.overflow?.mean_fraction)}</td>
+      <td style={td}><span style={{fontWeight:900,color:row.capacity_guardrail_met?"#166534":"#b45309"}}>{row.capacity_guardrail_met?"≤95%":"Above 95%"}</span></td>
+      <td style={td}><div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+        <button onClick={() => onLoad(row)} style={{padding:"6px 8px",borderRadius:7,border:"1px solid #7c3aed",background:"#fff",color:"#6d28d9",fontWeight:800,cursor:"pointer"}}>Load</button>
+        <button onClick={() => onLoadOverflow(row)} style={{padding:"6px 8px",borderRadius:7,border:"1px solid #059669",background:"#fff",color:"#047857",fontWeight:800,cursor:"pointer"}}>Load + overflow</button>
+        <button onClick={() => onSave(row)} style={{padding:"6px 8px",borderRadius:7,border:"1px solid #64748b",background:"#fff",color:"#334155",fontWeight:800,cursor:"pointer"}}>Save</button>
+      </div></td>
+    </tr>;
+  };
+  return <div style={{marginTop:14}}>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:8,marginBottom:12}}>
+      <Summary label="Candidates evaluated" value={result?.candidate_count ?? rows.length} />
+      <Summary label="Pareto alternatives" value={result?.pareto_count ?? frontier.length} />
+      <Summary label="Cell counts explored" value={(result?.k_values || []).join(", ") || "N/A"} />
+      <Summary label="Paired replications" value={result?.replications ?? "N/A"} />
+      <Summary label="Cases / replication" value={result?.cases_per_replication ?? "N/A"} />
+    </div>
+    {labels.length > 0 && <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(240px,1fr))",gap:8,marginBottom:14}}>
+      {labels.map(x => {
+        const c = rows.find(r => r.id === x.candidate_id);
+        return <div key={x.role} style={{padding:"10px 12px",border:"1px solid #bbf7d0",borderRadius:9,background:"#f0fdf4"}}>
+          <div style={{fontSize:11,fontWeight:900,color:"#166534"}}>{x.label}</div>
+          <div style={{fontSize:13,fontWeight:900,marginTop:3}}>{c?.profile_label || x.candidate_id} · {c?.k || "?"} cells</div>
+          <div style={{fontSize:10,color:"#475569",marginTop:4,lineHeight:1.45}}>{x.explanation}</div>
+        </div>;
+      })}
+    </div>}
+    <div style={{fontSize:12,fontWeight:900,marginBottom:6}}>Pareto set</div>
+    <div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:10,minWidth:1600}}>
+      <thead><tr style={{background:"#f8fafc"}}>{["Candidate","Cells","Structural score","Cross-cell routing","Workload CV","Throughput/hr","Mean cycle","P95 cycle","WIP","SLA","Max util","Backlog/hr","Overflow","Util guardrail","Action"].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
+      <tbody>{frontier.map(renderRow)}</tbody>
+    </table></div>
+    {dominated.length > 0 && <details style={{marginTop:12}}><summary style={{cursor:"pointer",fontSize:11,fontWeight:900,color:"#475569"}}>Show {dominated.length} generated alternatives outside the Pareto set</summary>
+      <div style={{overflowX:"auto",marginTop:8}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:10,minWidth:1600}}><tbody>{dominated.map(renderRow)}</tbody></table></div>
+    </details>}
+    <div style={{marginTop:12,padding:"10px 12px",border:"1px solid #d1fae5",background:"#ecfdf5",borderRadius:9,fontSize:11,color:"#065f46",lineHeight:1.55}}>
+      {(result?.notes || []).map((n,i) => <div key={i}>{i+1}. {n}</div>)}
+    </div>
+  </div>;
+}
+
+function CandidateEvaluationMatrix({evaluation}) {
+  const finite = v => v !== null && v !== undefined && Number.isFinite(Number(v));
+  const rows = evaluation?.candidates || [];
+  const metric = (row,scenario,key) => row?.[scenario]?.metrics?.[key];
+  const score = row => row?.structural_analysis?.score?.decision_support_score;
+  const cross = row => row?.structural_analysis?.routing_localization?.cross_cell_transition_fraction;
+  const cv = row => row?.structural_analysis?.balance?.workload_cv;
+
+  const columns = [
+    ["Structural score", row => finite(score(row)) ? fmtNum(score(row),2) : "N/A"],
+    ["Cross-cell routing", row => finite(cross(row)) ? fmtPct(cross(row)) : "N/A"],
+    ["Workload CV", row => finite(cv(row)) ? fmtNum(cv(row),3) : "N/A"],
+    ["No overflow throughput/hr", row => fmtNum(metric(row,"cellular_no_overflow","throughput_per_hour"),2)],
+    ["Controlled throughput/hr", row => fmtNum(metric(row,"cellular_controlled_overflow","throughput_per_hour"),2)],
+    ["Controlled mean cycle min", row => fmtNum(metric(row,"cellular_controlled_overflow","mean_cycle_minutes"),2)],
+    ["Controlled P95 cycle min", row => fmtNum(metric(row,"cellular_controlled_overflow","p95_cycle_minutes"),2)],
+    ["Controlled WIP", row => fmtNum(metric(row,"cellular_controlled_overflow","avg_wip"),2)],
+    ["Controlled SLA", row => fmtPct(metric(row,"cellular_controlled_overflow","sla_attainment"))],
+    ["Controlled max util", row => fmtPct(metric(row,"cellular_controlled_overflow","max_resource_utilization"))],
+    ["Controlled backlog/hr", row => fmtNum(metric(row,"cellular_controlled_overflow","backlog_growth_per_hour"),2)],
+    ["Overflow share", row => fmtPct(row?.overflow?.mean_fraction)],
+    ["Wait saved / overflow", row => `${fmtNum(row?.overflow?.mean_wait_saved_minutes,2)} min`]
+  ];
+
+  const g = evaluation?.global?.metrics || {};
+  return <div style={{marginTop:14}}>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(145px,1fr))",gap:8,marginBottom:12}}>
+      <Summary label="Global throughput/hr" value={fmtNum(g.throughput_per_hour,2)} />
+      <Summary label="Global mean cycle" value={`${fmtNum(g.mean_cycle_minutes,2)} min`} />
+      <Summary label="Global P95 cycle" value={`${fmtNum(g.p95_cycle_minutes,2)} min`} />
+      <Summary label="Global WIP" value={fmtNum(g.avg_wip,2)} />
+      <Summary label="Global max util" value={fmtPct(g.max_resource_utilization)} />
+    </div>
+    <div style={{overflowX:"auto"}}>
+      <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,minWidth:1500}}>
+        <thead><tr style={{background:"#f8fafc"}}>
+          <th style={th}>Candidate</th><th style={th}>Cells</th>
+          {columns.map(([label]) => <th key={label} style={th}>{label}</th>)}
+        </tr></thead>
+        <tbody>{rows.map(row => <tr key={row.id}>
+          <td style={td}><b>{row.profile_label || row.id}</b></td>
+          <td style={td}>{row.k}</td>
+          {columns.map(([label,fn]) => <td key={label} style={td}>{fn(row)}</td>)}
+        </tr>)}</tbody>
+      </table>
+    </div>
+    <div style={{marginTop:12,padding:"10px 12px",border:"1px solid #dbeafe",background:"#eff6ff",borderRadius:9,fontSize:11,color:"#1e3a8a",lineHeight:1.55}}>
+      {(evaluation?.notes || []).map((n,i) => <div key={i}>{i+1}. {n}</div>)}
+    </div>
+  </div>;
+}
+
+function MiniStat({label,value}) {
+  return <div style={{padding:"7px 8px",border:"1px solid #e2e8f0",borderRadius:8,background:"#fff"}}><div style={{fontSize:10,color:"#64748b"}}>{label}</div><div style={{fontSize:13,fontWeight:900,marginTop:2}}>{value}</div></div>;
+}
+
+function StructurePerformanceInterpretation({analysis,experiment}) {
+  const g = experiment?.global?.metrics || {};
+  const n = experiment?.cellular_no_overflow?.metrics || {};
+  const c = experiment?.cellular_controlled_overflow?.metrics || {};
+  const route = analysis?.routing_localization || {};
+  const balance = analysis?.balance || {};
+  const fit = analysis?.resource_fit || {};
+  const penalties = analysis?.penalties || {};
+  const entropy = analysis?.entropy || {};
+
+  const finite = v => Number.isFinite(Number(v));
+  const rel = (a,b) => finite(a) && finite(b) && Number(b) !== 0 ? (Number(a)-Number(b))/Math.abs(Number(b)) : null;
+  const reduction = (from,to) => finite(from) && finite(to) && Number(from) !== 0 ? (Number(from)-Number(to))/Math.abs(Number(from)) : null;
+  const pp = (a,b) => finite(a) && finite(b) ? Number(a)-Number(b) : null;
+
+  const cross = Number(route.cross_cell_transition_fraction);
+  const cv = Number(balance.workload_cv);
+  const coverage = Number(fit.skill_coverage_fraction);
+  const poolingLoss = Number(penalties.pooling_loss_penalty);
+  const overflowShare = Number(experiment?.overflow?.mean_fraction);
+
+  const controlledVsGlobalThroughput = rel(c.throughput_per_hour,g.throughput_per_hour);
+  const controlledVsGlobalCycle = reduction(g.mean_cycle_minutes,c.mean_cycle_minutes);
+  const controlledVsGlobalP95 = reduction(g.p95_cycle_minutes,c.p95_cycle_minutes);
+  const controlledVsGlobalWip = reduction(g.avg_wip,c.avg_wip);
+  const controlledVsGlobalBacklog = reduction(g.backlog_growth_per_hour,c.backlog_growth_per_hour);
+  const controlledVsGlobalUtil = pp(c.max_resource_utilization,g.max_resource_utilization);
+  const controlledVsNoCycle = reduction(n.mean_cycle_minutes,c.mean_cycle_minutes);
+  const noVsGlobalCycle = reduction(g.mean_cycle_minutes,n.mean_cycle_minutes);
+  const noVsGlobalThroughput = rel(n.throughput_per_hour,g.throughput_per_hour);
+
+  const entropyReductions = ["routing","activity","processing","work_type","skill"]
+    .map(k => Number(entropy?.[k]?.entropy_reduction_fraction))
+    .filter(Number.isFinite);
+  const avgEntropyReduction = entropyReductions.length ? entropyReductions.reduce((a,b)=>a+b,0)/entropyReductions.length : null;
+
+  const strictCellsWorse = (finite(noVsGlobalCycle) && noVsGlobalCycle < -0.05) || (finite(noVsGlobalThroughput) && noVsGlobalThroughput < -0.05);
+  const controlledBeatsGlobal = (finite(controlledVsGlobalCycle) && controlledVsGlobalCycle > 0.05) && (finite(controlledVsGlobalThroughput) && controlledVsGlobalThroughput > 0);
+  const complementarity = strictCellsWorse && controlledBeatsGlobal;
+
+  const structuralSignals = [];
+  if (finite(cv)) structuralSignals.push(cv <= 0.10
+    ? `Workload is very well balanced across cells (CV ${fmtNum(cv,3)}).`
+    : cv <= 0.25
+      ? `Workload balance is moderate across cells (CV ${fmtNum(cv,3)}).`
+      : `Workload is materially imbalanced across cells (CV ${fmtNum(cv,3)}).`);
+  if (finite(coverage)) structuralSignals.push(coverage >= 0.95
+    ? `Skill coverage is effectively complete (${fmtPct(coverage)}).`
+    : `Skill coverage is incomplete (${fmtPct(coverage)}), which can constrain otherwise coherent cells.`);
+  if (finite(cross)) structuralSignals.push(cross >= 0.40
+    ? `Cross-cell routing is high (${fmtPct(cross)}), so the process topology is not strongly isolated by the current cell boundary.`
+    : cross >= 0.20
+      ? `Cross-cell routing is moderate (${fmtPct(cross)}).`
+      : `Cross-cell routing is relatively low (${fmtPct(cross)}), indicating strong routing localization.`);
+  if (finite(avgEntropyReduction)) structuralSignals.push(`Average entropy reduction across available structural dimensions is ${fmtPct(avgEntropyReduction)}.`);
+  if (finite(poolingLoss) && poolingLoss >= 0.75) structuralSignals.push(`The structural pooling-loss proxy is high (${fmtNum(poolingLoss,2)}), so strict cellularization gives up much of the original shared-capacity flexibility.`);
+
+  const operationalSignals = [];
+  if (finite(controlledVsGlobalThroughput)) operationalSignals.push(`Controlled overflow changes throughput versus global pooling by ${signedPct(controlledVsGlobalThroughput)}.`);
+  if (finite(controlledVsGlobalCycle)) operationalSignals.push(`Controlled overflow changes mean cycle time versus global pooling by ${signedReduction(controlledVsGlobalCycle)}.`);
+  if (finite(controlledVsGlobalP95)) operationalSignals.push(`P95 cycle time changes versus global pooling by ${signedReduction(controlledVsGlobalP95)}.`);
+  if (finite(controlledVsGlobalWip)) operationalSignals.push(`Average WIP changes versus global pooling by ${signedReduction(controlledVsGlobalWip)}.`);
+  if (finite(controlledVsGlobalBacklog)) operationalSignals.push(`Backlog growth changes versus global pooling by ${signedReduction(controlledVsGlobalBacklog)}.`);
+  if (finite(controlledVsGlobalUtil)) operationalSignals.push(`Maximum resource utilization moves by ${signedPp(controlledVsGlobalUtil)} versus global pooling.`);
+  if (finite(overflowShare)) operationalSignals.push(`The realized overflow share is ${fmtPct(overflowShare)}.`);
+
+  let headline = "Structure and simulation show a mixed tradeoff.";
+  let explanation = "The structural metrics and operational metrics should be read together rather than collapsed into one score.";
+  if (complementarity) {
+    headline = "Local structure and selective pooling appear complementary in this design.";
+    explanation = "Strict cells lose too much pooling and perform worse than global pooling, while controlled overflow recovers flexibility and then outperforms global pooling on the paired throughput/cycle-time test. That pattern is consistent with protected local capacity plus selective cross-cell sharing creating value beyond either extreme alone.";
+  } else if (controlledBeatsGlobal) {
+    headline = "Controlled overflow outperforms global pooling in the current paired simulation.";
+    explanation = "The current cell structure is operationally useful despite its structural penalties. This is evidence that a slightly less 'clean' structural design can perform better when it preserves the right local structure and uses overflow selectively.";
+  } else if (strictCellsWorse && finite(controlledVsNoCycle) && controlledVsNoCycle > 0.10) {
+    headline = "The cells need flexibility to recover from fragmentation.";
+    explanation = "Strict cellularization performs poorly, but controlled overflow recovers a substantial part of the lost performance. The main mechanism appears to be restoration of selective pooling rather than cell structure alone.";
+  }
+
+  const caveats = [];
+  if (finite(c.max_resource_utilization) && Number(c.max_resource_utilization) > 0.95) caveats.push(`Controlled overflow is running at ${fmtPct(c.max_resource_utilization)} maximum utilization, above the 95% screening level. Performance gains should therefore be checked for robustness under demand/capacity sensitivity.`);
+  if (finite(c.sla_attainment) && Number(c.sla_attainment) < 0.50) caveats.push(`SLA attainment remains low (${fmtPct(c.sla_attainment)}), so the operating structure may be better than the alternatives while the overall system is still capacity constrained.`);
+  if (!finite(entropy?.work_type?.entropy_reduction_fraction)) caveats.push("Work-type entropy is unavailable, so form-function alignment at the transaction-family level is not yet being measured directly.");
+  if (!finite(entropy?.skill?.entropy_reduction_fraction)) caveats.push("Skill entropy is unavailable, so skill-demand localization is not yet part of this interpretation.");
+
+  return <div>
+    <div style={{padding:"14px 16px",border:"1px solid #bbf7d0",background:"#f0fdf4",borderRadius:12,color:"#166534",lineHeight:1.55}}>
+      <div style={{fontWeight:900,fontSize:15}}>{headline}</div>
+      <div style={{fontSize:12,marginTop:5}}>{explanation}</div>
+    </div>
+
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(310px,1fr))",gap:14,marginTop:14}}>
+      <div style={{padding:14,border:"1px solid #e2e8f0",borderRadius:12,background:"#f8fafc"}}>
+        <div style={{fontWeight:800,fontSize:13}}>Structural evidence</div>
+        <div style={{display:"grid",gap:8,marginTop:10}}>{structuralSignals.map((x,i)=><div key={i} style={{fontSize:12,color:"#475569",lineHeight:1.5}}>• {x}</div>)}</div>
+      </div>
+      <div style={{padding:14,border:"1px solid #e2e8f0",borderRadius:12,background:"#f8fafc"}}>
+        <div style={{fontWeight:800,fontSize:13}}>Operational evidence</div>
+        <div style={{display:"grid",gap:8,marginTop:10}}>{operationalSignals.map((x,i)=><div key={i} style={{fontSize:12,color:"#475569",lineHeight:1.5}}>• {x}</div>)}</div>
+      </div>
+    </div>
+
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:10,marginTop:14}}>
+      <Summary label="Controlled vs global throughput" value={finite(controlledVsGlobalThroughput)?signedPct(controlledVsGlobalThroughput):"N/A"} />
+      <Summary label="Controlled vs global mean cycle" value={finite(controlledVsGlobalCycle)?signedReduction(controlledVsGlobalCycle):"N/A"} />
+      <Summary label="Controlled vs no-overflow mean cycle" value={finite(controlledVsNoCycle)?signedReduction(controlledVsNoCycle):"N/A"} />
+      <Summary label="Controlled max utilization" value={finite(c.max_resource_utilization)?fmtPct(c.max_resource_utilization):"N/A"} />
+    </div>
+
+    {caveats.length > 0 && <div style={{marginTop:14,padding:"11px 13px",border:"1px solid #fde68a",background:"#fffbeb",borderRadius:10,fontSize:11,color:"#92400e",lineHeight:1.55}}>
+      <b>Interpretation limits</b>
+      {caveats.map((x,i)=><div key={i} style={{marginTop:5}}>{i+1}. {x}</div>)}
+    </div>}
+  </div>;
+}
+
+function signedPct(v) {
+  const n=Number(v);
+  if (!Number.isFinite(n)) return "N/A";
+  return `${n>0?"+":""}${fmtNum(100*n,2)}%`;
+}
+
+function signedReduction(v) {
+  const n=Number(v);
+  if (!Number.isFinite(n)) return "N/A";
+  if (n > 0) return `${fmtNum(100*n,2)}% lower`;
+  if (n < 0) return `${fmtNum(100*Math.abs(n),2)}% higher`;
+  return "no change";
+}
+
+function signedPp(v) {
+  const n=Number(v);
+  if (!Number.isFinite(n)) return "N/A";
+  return `${n>0?"+":""}${fmtNum(100*n,2)} pp`;
+}
+
+function ComparisonTable({experiment}) {
+  const g = experiment?.global?.metrics || {};
+  const c = experiment?.cellular_no_overflow?.metrics || {};
+  const d = experiment?.paired_delta_cellular_minus_global?.mean || {};
+  const rows = [
+    ["Throughput / hr","throughput_per_hour","num"],
+    ["Mean cycle (min)","mean_cycle_minutes","num"],
+    ["Median cycle (min)","median_cycle_minutes","num"],
+    ["P95 cycle (min)","p95_cycle_minutes","num"],
+    ["SLA attainment","sla_attainment","pct"],
+    ["Average WIP","avg_wip","num"],
+    ["Max resource utilization","max_resource_utilization","pct"],
+    ["Backlog growth / hr","backlog_growth_per_hour","num"],
+    ["Annual cost","annual_cost","money"]
+  ];
+  const show = (v,type) => type === "pct" ? fmtPct(v) : type === "money" ? (Number.isFinite(Number(v)) ? `$${Number(v).toLocaleString(undefined,{maximumFractionDigits:0})}` : "—") : fmtNum(v,2);
+  const showDelta = (v,type) => {
+    const n=Number(v);
+    if (!Number.isFinite(n)) return "—";
+    const sign=n>0?"+":"";
+    if (type === "pct") return `${sign}${fmtNum(100*n,2)} pp`;
+    if (type === "money") return `${sign}$${Math.round(n).toLocaleString()}`;
+    return `${sign}${fmtNum(n,2)}`;
+  };
+  return <div style={{overflowX:"auto"}}>
+    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+      <thead><tr><th align="left" style={{padding:"8px 6px",borderBottom:"1px solid #e2e8f0"}}>Metric</th><th align="right" style={{padding:"8px 6px",borderBottom:"1px solid #e2e8f0"}}>Global pooling</th><th align="right" style={{padding:"8px 6px",borderBottom:"1px solid #e2e8f0"}}>Cellular / no overflow</th><th align="right" style={{padding:"8px 6px",borderBottom:"1px solid #e2e8f0"}}>Cellular − Global</th></tr></thead>
+      <tbody>{rows.map(([label,key,type]) => <tr key={key}>
+        <td style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9",fontWeight:700}}>{label}</td>
+        <td align="right" style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9"}}>{show(g[key],type)}</td>
+        <td align="right" style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9"}}>{show(c[key],type)}</td>
+        <td align="right" style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9",fontWeight:700}}>{showDelta(d[key],type)}</td>
+      </tr>)}</tbody>
+    </table>
+  </div>;
+}
+
+function Phase2ComparisonTable({experiment}) {
+  const g = experiment?.global?.metrics || {};
+  const n = experiment?.cellular_no_overflow?.metrics || {};
+  const c = experiment?.cellular_controlled_overflow?.metrics || {};
+  const d = experiment?.paired_delta_controlled_minus_no_overflow?.mean || {};
+  const rows = [
+    ["Throughput / hr","throughput_per_hour","num"],
+    ["Mean cycle (min)","mean_cycle_minutes","num"],
+    ["Median cycle (min)","median_cycle_minutes","num"],
+    ["P95 cycle (min)","p95_cycle_minutes","num"],
+    ["SLA attainment","sla_attainment","pct"],
+    ["Average WIP","avg_wip","num"],
+    ["Max resource utilization","max_resource_utilization","pct"],
+    ["Backlog growth / hr","backlog_growth_per_hour","num"],
+    ["Annual cost","annual_cost","money"]
+  ];
+  const show = (v,type) => type === "pct" ? fmtPct(v) : type === "money" ? (Number.isFinite(Number(v)) ? `$${Number(v).toLocaleString(undefined,{maximumFractionDigits:0})}` : "—") : fmtNum(v,2);
+  const showDelta = (v,type) => {
+    const x=Number(v);
+    if (!Number.isFinite(x)) return "—";
+    const sign=x>0?"+":"";
+    if (type === "pct") return `${sign}${fmtNum(100*x,2)} pp`;
+    if (type === "money") return `${sign}$${Math.round(x).toLocaleString()}`;
+    return `${sign}${fmtNum(x,2)}`;
+  };
+  return <div style={{overflowX:"auto"}}>
+    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+      <thead><tr>
+        <th align="left" style={{padding:"8px 6px",borderBottom:"1px solid #e2e8f0"}}>Metric</th>
+        <th align="right" style={{padding:"8px 6px",borderBottom:"1px solid #e2e8f0"}}>Global</th>
+        <th align="right" style={{padding:"8px 6px",borderBottom:"1px solid #e2e8f0"}}>Cellular / no overflow</th>
+        <th align="right" style={{padding:"8px 6px",borderBottom:"1px solid #e2e8f0"}}>Controlled overflow</th>
+        <th align="right" style={{padding:"8px 6px",borderBottom:"1px solid #e2e8f0"}}>Controlled − No overflow</th>
+      </tr></thead>
+      <tbody>{rows.map(([label,key,type]) => <tr key={key}>
+        <td style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9",fontWeight:700}}>{label}</td>
+        <td align="right" style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9"}}>{show(g[key],type)}</td>
+        <td align="right" style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9"}}>{show(n[key],type)}</td>
+        <td align="right" style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9"}}>{show(c[key],type)}</td>
+        <td align="right" style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9",fontWeight:700}}>{showDelta(d[key],type)}</td>
+      </tr>)}</tbody>
+    </table>
+  </div>;
+}
+
+function OverflowSensitivityTable({rows}) {
+  const valid = Array.isArray(rows) ? rows : [];
+  const under95 = valid.filter(r => Number(r.metrics?.max_resource_utilization) <= 0.95);
+  const preferred = (under95.length ? under95 : valid).reduce((best,r) => {
+    if (!best) return r;
+    return Number(r.metrics?.mean_cycle_minutes) < Number(best.metrics?.mean_cycle_minutes) ? r : best;
+  },null);
+  const metrics = [
+    ["Throughput / hr","throughput_per_hour","num"],
+    ["Mean cycle (min)","mean_cycle_minutes","num"],
+    ["P95 cycle (min)","p95_cycle_minutes","num"],
+    ["Average WIP","avg_wip","num"],
+    ["Backlog growth / hr","backlog_growth_per_hour","num"],
+    ["Max utilization","max_resource_utilization","pct"],
+    ["Overflow share","overflow_fraction","pct"]
+  ];
+  const val=(r,key)=>key==="overflow_fraction" ? r.overflow?.mean_fraction : r.metrics?.[key];
+  const show=(v,type)=>type==="pct"?fmtPct(v):fmtNum(v,2);
+  return <div>
+    {preferred && <div style={{marginBottom:12,padding:"10px 12px",border:"1px solid #bbf7d0",background:"#f0fdf4",borderRadius:10,fontSize:12,color:"#166534",lineHeight:1.55}}>
+      <b>Best threshold under the 95% utilization screen:</b> {preferred.label}. {under95.length ? "Selected by lowest mean cycle time among thresholds at or below 95% max utilization." : "No tested threshold stayed at or below 95%; showing the lowest mean-cycle threshold overall."}
+    </div>}
+    <div style={{overflowX:"auto"}}>
+      <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:900}}>
+        <thead><tr>
+          <th align="left" style={{padding:"8px 6px",borderBottom:"1px solid #e2e8f0"}}>Threshold</th>
+          {metrics.map(([label,key]) => <th key={key} align="right" style={{padding:"8px 6px",borderBottom:"1px solid #e2e8f0",whiteSpace:"nowrap"}}>{label}</th>)}
+        </tr></thead>
+        <tbody>{valid.map(r => {
+          const isPreferred = preferred && r.threshold_minutes === preferred.threshold_minutes;
+          return <tr key={r.threshold_minutes} style={{background:isPreferred?"#f0fdf4":"transparent"}}>
+            <td style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9",fontWeight:800}}>{r.label}{isPreferred?" · preferred":""}</td>
+            {metrics.map(([_,key,type]) => <td key={key} align="right" style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9",fontWeight:key==="max_resource_utilization" && Number(val(r,key))>0.95?800:400,color:key==="max_resource_utilization" && Number(val(r,key))>0.95?"#b91c1c":"inherit"}}>{show(val(r,key),type)}</td>)}
+          </tr>;
+        })}</tbody>
+      </table>
+    </div>
+  </div>;
+}
+
+function SchedulingMatrixTable({experiment}) {
+  const m = experiment?.matrix || {};
+  const scenarios = [
+    ["Global · FCFS","global_fcfs"],
+    ["Global · SLA-risk","global_sla_risk"],
+    ["Cellular no overflow · FCFS","cellular_no_overflow_fcfs"],
+    ["Cellular no overflow · SLA-risk","cellular_no_overflow_sla_risk"],
+    ["Controlled overflow · FCFS","cellular_controlled_overflow_fcfs"],
+    ["Controlled overflow · SLA-risk","cellular_controlled_overflow_sla_risk"]
+  ];
+  const rows = [
+    ["Mean cycle (min)","mean_cycle_minutes","num"],
+    ["Median cycle (min)","median_cycle_minutes","num"],
+    ["P95 cycle (min)","p95_cycle_minutes","num"],
+    ["Mean wait (min)","mean_wait_minutes","num"],
+    ["Throughput / hr","throughput_per_hour","num"],
+    ["SLA attainment","sla_attainment","pct"],
+    ["Average WIP","avg_wip","num"],
+    ["Max utilization","max_resource_utilization","pct"],
+    ["Backlog growth / hr","backlog_growth_per_hour","num"],
+    ["Annual cost","annual_cost","money"]
+  ];
+  const show=(v,type)=>type==="pct"?fmtPct(v):type==="money"?(Number.isFinite(Number(v))?`$${Number(v).toLocaleString(undefined,{maximumFractionDigits:0})}`:"—"):fmtNum(v,2);
+  return <div style={{overflowX:"auto"}}>
+    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:900}}>
+      <thead><tr>
+        <th align="left" style={{padding:"8px 6px",borderBottom:"1px solid #e2e8f0"}}>Scenario</th>
+        {rows.map(([label,key]) => <th key={key} align="right" style={{padding:"8px 6px",borderBottom:"1px solid #e2e8f0",whiteSpace:"nowrap"}}>{label}</th>)}
+      </tr></thead>
+      <tbody>{scenarios.map(([label,key]) => { const x=m?.[key]?.metrics || {}; return <tr key={key}>
+        <td style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9",fontWeight:800,whiteSpace:"nowrap"}}>{label}</td>
+        {rows.map(([_,metric,type]) => <td key={metric} align="right" style={{padding:"8px 6px",borderBottom:"1px solid #f1f5f9"}}>{show(x[metric],type)}</td>)}
+      </tr>; })}</tbody>
+    </table>
+  </div>;
+}
+
+function Step({n,title,text}) {
+  return (
+    <div style={{padding:14,border:"1px solid #e2e8f0",borderRadius:12,background:"#fff"}}>
+      <div style={{fontSize:11,fontWeight:800,color:"#4f46e5"}}>STEP {n}</div>
+      <div style={{fontWeight:800,marginTop:4}}>{title}</div>
+      <div style={{fontSize:12,color:"#64748b",lineHeight:1.45,marginTop:5}}>{text}</div>
+    </div>
   );
 }
